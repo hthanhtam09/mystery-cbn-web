@@ -6,25 +6,44 @@ const ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 export interface UploaderProps {
   disabled?: boolean;
-  onSubmit: (file: File) => void;
+  onSubmit: (files: File[]) => void;
 }
 
 export function Uploader({ disabled = false, onSubmit }: UploaderProps) {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const inputId = useId();
 
-  const acceptFile = useCallback((candidate: File | undefined) => {
-    if (!candidate) return;
-    if (!ACCEPTED_TYPES.includes(candidate.type)) {
-      setValidationError("Please choose a PNG, JPEG, or WebP image.");
-      setFile(null);
-      return;
+  const acceptFiles = useCallback((candidates: FileList | null | undefined) => {
+    if (!candidates || candidates.length === 0) return;
+    const accepted: File[] = [];
+    const rejected: string[] = [];
+    for (const candidate of Array.from(candidates)) {
+      if (ACCEPTED_TYPES.includes(candidate.type)) {
+        accepted.push(candidate);
+      } else {
+        rejected.push(candidate.name);
+      }
     }
-    setValidationError(null);
-    setFile(candidate);
+    setValidationError(
+      rejected.length > 0
+        ? `Skipped (not PNG, JPEG, or WebP): ${rejected.join(", ")}`
+        : null,
+    );
+    if (accepted.length > 0) {
+      // Appends to the current selection so users can pick files in several
+      // rounds; duplicates by name+size are dropped.
+      setFiles((prev) => {
+        const seen = new Set(prev.map((f) => `${f.name}:${f.size}`));
+        return [...prev, ...accepted.filter((f) => !seen.has(`${f.name}:${f.size}`))];
+      });
+    }
+  }, []);
+
+  const removeFile = useCallback((index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
   const handleDrop = useCallback(
@@ -32,21 +51,21 @@ export function Uploader({ disabled = false, onSubmit }: UploaderProps) {
       event.preventDefault();
       setIsDragging(false);
       if (disabled) return;
-      acceptFile(event.dataTransfer.files[0]);
+      acceptFiles(event.dataTransfer.files);
     },
-    [acceptFile, disabled],
+    [acceptFiles, disabled],
   );
 
   const handleSubmit = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault();
-      if (!file) {
-        setValidationError("Choose an image first.");
+      if (files.length === 0) {
+        setValidationError("Choose at least one image first.");
         return;
       }
-      onSubmit(file);
+      onSubmit(files);
     },
-    [file, onSubmit],
+    [files, onSubmit],
   );
 
   return (
@@ -77,16 +96,44 @@ export function Uploader({ disabled = false, onSubmit }: UploaderProps) {
           ref={inputRef}
           id={inputId}
           type="file"
+          multiple
           accept={ACCEPTED_TYPES.join(",")}
           disabled={disabled}
-          onChange={(e) => acceptFile(e.target.files?.[0])}
+          onChange={(e) => {
+            acceptFiles(e.target.files);
+            // Allow re-selecting the same file(s) after removal.
+            e.target.value = "";
+          }}
           className="sr-only"
         />
         <p className="text-sm font-medium">
-          {file ? file.name : "Drag & drop a photo, or click to choose one"}
+          {files.length > 0
+            ? `${files.length} image${files.length > 1 ? "s" : ""} selected`
+            : "Drag & drop photos, or click to choose"}
         </p>
-        <p className="text-xs text-foreground/60">PNG, JPEG, or WebP</p>
+        <p className="text-xs text-foreground/60">PNG, JPEG, or WebP — multiple files allowed</p>
       </div>
+
+      {files.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {files.map((file, index) => (
+            <li
+              key={`${file.name}:${file.size}`}
+              className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5 text-sm"
+            >
+              <span className="truncate">{file.name}</span>
+              <button
+                type="button"
+                onClick={() => removeFile(index)}
+                aria-label={`Remove ${file.name}`}
+                className="text-xs text-foreground/60 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {validationError && (
         <p id={`${inputId}-error`} role="alert" className="text-sm text-red-600 dark:text-red-400">
@@ -96,10 +143,14 @@ export function Uploader({ disabled = false, onSubmit }: UploaderProps) {
 
       <button
         type="submit"
-        disabled={disabled || !file}
+        disabled={disabled || files.length === 0}
         className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        {disabled ? "Converting…" : "Convert"}
+        {disabled
+          ? "Converting…"
+          : files.length > 1
+            ? `Convert ${files.length} images`
+            : "Convert"}
       </button>
     </form>
   );

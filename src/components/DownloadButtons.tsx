@@ -5,10 +5,9 @@ import { ApiError, fetchArtifactBlob } from "@/lib/api";
 import type { ArtifactKey } from "@/lib/api";
 
 const DOWNLOADS: { artifact: ArtifactKey; label: string; extension: string; suffix: string }[] = [
-  { artifact: "svg", label: "Download SVG", extension: "svg", suffix: "" },
-  { artifact: "pdf", label: "Download PDF", extension: "pdf", suffix: "" },
-  { artifact: "preview_lineart", label: "Download Outline PNG", extension: "png", suffix: "-outline" },
-  { artifact: "preview_solved", label: "Download Colored PNG", extension: "png", suffix: "-colored" },
+  { artifact: "preview_lineart", label: "Download Outline", extension: "png", suffix: "-outline" },
+  { artifact: "preview_colored", label: "Download Colored", extension: "png", suffix: "-colored" },
+  { artifact: "preview_palette", label: "Download Palette", extension: "png", suffix: "-palette" },
 ];
 
 export interface DownloadButtonsProps {

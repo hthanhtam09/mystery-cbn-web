@@ -1,55 +1,49 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
+import { useWheelZoom } from "@/hooks/useWheelZoom";
 import { downloadUrl } from "@/lib/api";
-
-const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4];
-const DEFAULT_ZOOM_INDEX = 3; // 1x
 
 export interface PreviewViewerProps {
   jobId: string;
 }
 
-type PreviewKind = "preview_lineart" | "preview_solved";
+type PreviewKind = "preview_lineart" | "preview_colored" | "preview_palette";
 
-export function PreviewViewer({ jobId }: PreviewViewerProps) {
-  const [kind, setKind] = useState<PreviewKind>("preview_solved");
-  const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
-  const zoom = ZOOM_STEPS[zoomIndex];
+const PREVIEW_TABS: { kind: PreviewKind; label: string; alt: string }[] = [
+  { kind: "preview_lineart", label: "Outline", alt: "Outline (line-art) preview of the conversion" },
+  { kind: "preview_colored", label: "Colored", alt: "Colored preview: the outline with numbers, lines, and solution colors" },
+  { kind: "preview_palette", label: "Palette", alt: "Numbered color palette of the conversion" },
+];
 
-  const zoomIn = useCallback(() => setZoomIndex((i) => Math.min(i + 1, ZOOM_STEPS.length - 1)), []);
-  const zoomOut = useCallback(() => setZoomIndex((i) => Math.max(i - 1, 0)), []);
-  const resetZoom = useCallback(() => setZoomIndex(DEFAULT_ZOOM_INDEX), []);
+export function PreviewViewer({ jobId }: Readonly<PreviewViewerProps>) {
+  const [kind, setKind] = useState<PreviewKind>("preview_colored");
+  const { targetRef, zoom, canZoomIn, canZoomOut, zoomIn, zoomOut, resetZoom } =
+    useWheelZoom<HTMLDivElement>();
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1 rounded-md border border-border p-1" role="tablist" aria-label="Preview variant">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={kind === "preview_lineart"}
-            onClick={() => setKind("preview_lineart")}
-            className={`rounded px-3 py-1 text-sm ${kind === "preview_lineart" ? "bg-accent text-white" : "hover:bg-surface"}`}
-          >
-            Line art
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={kind === "preview_solved"}
-            onClick={() => setKind("preview_solved")}
-            className={`rounded px-3 py-1 text-sm ${kind === "preview_solved" ? "bg-accent text-white" : "hover:bg-surface"}`}
-          >
-            Solved
-          </button>
+          {PREVIEW_TABS.map((tab) => (
+            <button
+              key={tab.kind}
+              type="button"
+              role="tab"
+              aria-selected={kind === tab.kind}
+              onClick={() => setKind(tab.kind)}
+              className={`rounded px-3 py-1 text-sm ${kind === tab.kind ? "bg-accent text-white" : "hover:bg-surface"}`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
         <div className="flex items-center gap-1" role="group" aria-label="Zoom controls">
           <button
             type="button"
             onClick={zoomOut}
-            disabled={zoomIndex === 0}
+            disabled={!canZoomOut}
             aria-label="Zoom out"
             className="inline-flex h-8 w-8 items-center justify-center rounded border border-border disabled:opacity-40"
           >
@@ -66,7 +60,7 @@ export function PreviewViewer({ jobId }: PreviewViewerProps) {
           <button
             type="button"
             onClick={zoomIn}
-            disabled={zoomIndex === ZOOM_STEPS.length - 1}
+            disabled={!canZoomIn}
             aria-label="Zoom in"
             className="inline-flex h-8 w-8 items-center justify-center rounded border border-border disabled:opacity-40"
           >
@@ -75,14 +69,18 @@ export function PreviewViewer({ jobId }: PreviewViewerProps) {
         </div>
       </div>
 
-      <div className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-surface">
+      <div
+        ref={targetRef}
+        className="max-h-[70vh] overflow-auto rounded-lg border border-border bg-surface"
+      >
         <div className="flex min-h-full min-w-full items-center justify-center p-4">
           {/* eslint-disable-next-line @next/next/no-img-element -- external, dynamically-sized API-served image; next/image's optimizer doesn't apply */}
           <img
             src={downloadUrl(jobId, kind)}
-            alt={kind === "preview_lineart" ? "Line-art preview of the conversion" : "Solved (colored) preview of the conversion"}
+            alt={PREVIEW_TABS.find((t) => t.kind === kind)?.alt ?? "Preview of the conversion"}
+            draggable={false}
             style={{ width: `${zoom * 100}%`, maxWidth: "none" }}
-            className="transition-[width] duration-150"
+            className="select-none"
           />
         </div>
       </div>

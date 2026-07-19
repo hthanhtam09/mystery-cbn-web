@@ -5,7 +5,13 @@
 
 export type JobState = "pending" | "running" | "succeeded" | "failed" | "cancelled";
 
-export type ArtifactKey = "svg" | "pdf" | "preview_lineart" | "preview_solved";
+export type ArtifactKey =
+  | "svg"
+  | "pdf"
+  | "preview_lineart"
+  | "preview_solved"
+  | "preview_colored"
+  | "preview_palette";
 
 export interface ConvertResponse {
   job_id: string;
