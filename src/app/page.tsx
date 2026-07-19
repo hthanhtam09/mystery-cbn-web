@@ -1,64 +1,120 @@
-import Image from "next/image";
+"use client";
+
+import { useCallback, useState } from "react";
+import { DownloadButtons } from "@/components/DownloadButtons";
+import { JobHistoryList } from "@/components/JobHistoryList";
+import { JobProgress } from "@/components/JobProgress";
+import { PreviewViewer } from "@/components/PreviewViewer";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { Uploader } from "@/components/Uploader";
+import { useConvertJob } from "@/hooks/useConvertJob";
+import { useJobHistory } from "@/hooks/useJobHistory";
+import { useJobStatus } from "@/hooks/useJobStatus";
 
 export default function Home() {
+  const activeJob = useConvertJob();
+  const history = useJobHistory();
+  const [historyJobId, setHistoryJobId] = useState<string | null>(null);
+  const historyJob = useJobStatus(historyJobId);
+
+  // Selecting a history entry views that job instead of the live submit flow.
+  const viewingHistory = historyJobId !== null;
+  const displayedStatus = viewingHistory ? historyJob.status : activeJob.status;
+  const displayedError = viewingHistory ? historyJob.error : activeJob.submitError;
+
+  const handleSubmit = useCallback(
+    (file: File) => {
+      setHistoryJobId(null);
+      void activeJob.submit(file);
+    },
+    [activeJob],
+  );
+
+  const handleSelectHistory = useCallback((jobId: string) => {
+    setHistoryJobId(jobId);
+  }, []);
+
+  const handleStartOver = useCallback(() => {
+    setHistoryJobId(null);
+    activeJob.reset();
+  }, [activeJob]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold">Mystery Color-by-Number</h1>
+          <p className="text-sm text-foreground/60">
+            Upload a photo to generate a printable color-by-number page.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+        <ThemeToggle />
+      </header>
+
+      <main className="flex flex-col gap-6">
+        <section aria-labelledby="upload-heading" className="flex flex-col gap-4">
+          <h2 id="upload-heading" className="sr-only">
+            Upload
+          </h2>
+          {!displayedStatus || displayedStatus.state === "failed" || displayedStatus.state === "cancelled" ? (
+            <Uploader disabled={activeJob.submitting} onSubmit={handleSubmit} />
+          ) : (
+            <button
+              type="button"
+              onClick={handleStartOver}
+              className="self-start text-sm text-foreground/70 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              ← Start a new conversion
+            </button>
+          )}
+
+          {displayedError && (
+            <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+              {displayedError}
+            </p>
+          )}
+        </section>
+
+        {displayedStatus && (
+          <section aria-labelledby="progress-heading" className="flex flex-col gap-4">
+            <h2 id="progress-heading" className="sr-only">
+              Conversion status
+            </h2>
+            <JobProgress status={displayedStatus} onCancel={activeJob.cancel} />
+
+            {displayedStatus.state === "succeeded" && displayedStatus.downloads && (
+              <>
+                <PreviewViewer jobId={displayedStatus.job_id} />
+                <DownloadButtons
+                  jobId={displayedStatus.job_id}
+                  availableArtifacts={displayedStatus.downloads}
+                />
+              </>
+            )}
+          </section>
+        )}
+
+        <section aria-labelledby="history-heading" className="flex flex-col gap-3 border-t border-border pt-6">
+          <div className="flex items-center justify-between">
+            <h2 id="history-heading" className="text-sm font-semibold">
+              Job history
+            </h2>
+            {history.entries.length > 0 && (
+              <button
+                type="button"
+                onClick={history.clear}
+                className="text-xs text-foreground/60 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+          <JobHistoryList
+            entries={history.entries}
+            onSelect={handleSelectHistory}
+            onRemove={history.remove}
+          />
+        </section>
       </main>
     </div>
   );

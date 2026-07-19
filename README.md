@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# mystery-cbn-web
 
-## Getting Started
+Web frontend for [mystery-cbn](../mystery-cbn), a region-based mystery
+color-by-number conversion engine. This app is a fully independent
+Next.js/React/TypeScript project — it has no dependency on the engine's
+source and talks to it exclusively over its versioned REST API
+(`/v1/convert`, `/v1/jobs/{id}`, `/v1/download/{id}`, `/v1/health`).
 
-First, run the development server:
+## Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+src/
+  app/          route composition only (page.tsx assembles components/hooks)
+  components/   presentational + interactive UI, no direct API calls
+  hooks/        stateful logic: submit/poll a job, theme, history
+  lib/api/      the ONLY place that knows the REST contract (types + client)
+  lib/jobHistory.ts   localStorage-backed history (the API has no job-listing endpoint)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`lib/api` is the sole seam to the backend. If the API changes, only that
+directory should need edits.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Getting started
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Start the mystery-cbn API (see that repo's `adapters/api`):
+   ```bash
+   cd ../mystery-cbn
+   uvicorn mysterycbn.adapters.api.main:app --port 8000
+   ```
+2. Configure this app's API base URL:
+   ```bash
+   cp .env.local.example .env.local
+   # edit NEXT_PUBLIC_API_BASE_URL if the API isn't on localhost:8000
+   ```
+3. Install and run:
+   ```bash
+   npm install
+   npm run dev
+   ```
+   Open http://localhost:3000.
 
-## Learn More
+## Features
 
-To learn more about Next.js, take a look at the following resources:
+- Drag-and-drop or click-to-choose upload with client-side type validation
+- Async job submission with live progress polling and cancellation
+- Preview with line-art/solved toggle and zoom controls
+- Download SVG, PDF, and PNG outputs
+- Job history (this browser only, via localStorage)
+- Dark mode (manual toggle, persisted, defaults to OS preference)
+- Responsive layout, keyboard-navigable, ARIA-labeled controls
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Scripts
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `npm run dev` — dev server (Turbopack)
+- `npm run build` — production build
+- `npm run start` — serve the production build
+- `npm run lint` — ESLint
