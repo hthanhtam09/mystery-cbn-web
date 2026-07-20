@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Uploader } from "@/components/Uploader";
 import { useBatchConvert } from "@/hooks/useBatchConvert";
 import type { BatchItem } from "@/hooks/useBatchConvert";
+import { useGeneratePdf } from "@/hooks/useGeneratePdf";
 import { useJobHistory } from "@/hooks/useJobHistory";
 import { useJobStatus } from "@/hooks/useJobStatus";
 import { downloadUrl } from "@/lib/api";
@@ -182,6 +183,7 @@ function BatchItemModal({
 export default function Home() {
   const batch = useBatchConvert();
   const history = useJobHistory();
+  const pdfExport = useGeneratePdf();
   const [historyJobId, setHistoryJobId] = useState<string | null>(null);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const historyJob = useJobStatus(historyJobId);
@@ -193,6 +195,16 @@ export default function Home() {
   const batchFinished = batchStarted && batch.items.every(isItemFinished);
   const doneCount = batch.items.filter(isItemFinished).length;
   const openItem = openItemId !== null ? batch.items.find((i) => i.id === openItemId) : undefined;
+  const succeededItems = batch.items.filter(
+    (item): item is BatchItem & { status: NonNullable<BatchItem["status"]> } =>
+      item.status?.state === "succeeded",
+  );
+
+  const handleGeneratePdf = useCallback(() => {
+    void pdfExport.generate(
+      succeededItems.map((item) => ({ jobId: item.status.job_id, fileName: item.fileName })),
+    );
+  }, [pdfExport, succeededItems]);
 
   const handleSubmit = useCallback(
     (files: File[]) => {
@@ -273,11 +285,30 @@ export default function Home() {
         ) : (
           batchStarted && (
             <section aria-labelledby="progress-heading" className="flex flex-col gap-4">
-              <h2 id="progress-heading" className="text-sm font-semibold">
-                {batchFinished
-                  ? `Finished ${doneCount} of ${batch.items.length}`
-                  : `Converting… ${doneCount} of ${batch.items.length} done`}
-              </h2>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 id="progress-heading" className="text-sm font-semibold">
+                  {batchFinished
+                    ? `Finished ${doneCount} of ${batch.items.length}`
+                    : `Converting… ${doneCount} of ${batch.items.length} done`}
+                </h2>
+                {batchFinished && succeededItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleGeneratePdf}
+                    disabled={pdfExport.generating}
+                    className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {pdfExport.generating
+                      ? `Generating PDF… ${pdfExport.progress?.done ?? 0}/${pdfExport.progress?.total ?? succeededItems.length}`
+                      : "Generate PDF"}
+                  </button>
+                )}
+              </div>
+              {pdfExport.error && (
+                <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+                  {pdfExport.error}
+                </p>
+              )}
               <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
                 {batch.items.map((item) => (
                   <li key={item.id}>
