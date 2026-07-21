@@ -2,13 +2,13 @@
 
 import { useCallback, useRef, useState } from "react";
 import { generateBatchPdf } from "@/lib/pdfExport";
-import type { PdfExportItem, PdfExportProgress } from "@/lib/pdfExport";
+import type { PdfExportItem, PdfExportOptions, PdfExportProgress } from "@/lib/pdfExport";
 
 export interface UseGeneratePdfResult {
   generating: boolean;
   progress: PdfExportProgress | null;
   error: string | null;
-  generate: (items: PdfExportItem[]) => Promise<void>;
+  generate: (items: PdfExportItem[], options?: PdfExportOptions) => Promise<void>;
 }
 
 /**
@@ -23,16 +23,20 @@ export function useGeneratePdf(): UseGeneratePdfResult {
   const [error, setError] = useState<string | null>(null);
   const generationRef = useRef(0);
 
-  const generate = useCallback(async (items: PdfExportItem[]) => {
+  const generate = useCallback(async (items: PdfExportItem[], options?: PdfExportOptions) => {
     const generation = ++generationRef.current;
     setGenerating(true);
     setProgress({ done: 0, total: items.length });
     setError(null);
 
     try {
-      const blob = await generateBatchPdf(items, (p) => {
-        if (generationRef.current === generation) setProgress(p);
-      });
+      const blob = await generateBatchPdf(
+        items,
+        (p) => {
+          if (generationRef.current === generation) setProgress(p);
+        },
+        options,
+      );
       if (generationRef.current !== generation) return;
 
       const objectUrl = URL.createObjectURL(blob);

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { DownloadButtons } from "@/components/DownloadButtons";
-import { JobHistoryList } from "@/components/JobHistoryList";
 import { JobProgress } from "@/components/JobProgress";
 import { PreviewViewer } from "@/components/PreviewViewer";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -10,8 +9,6 @@ import { Uploader } from "@/components/Uploader";
 import { useBatchConvert } from "@/hooks/useBatchConvert";
 import type { BatchItem } from "@/hooks/useBatchConvert";
 import { useGeneratePdf } from "@/hooks/useGeneratePdf";
-import { useJobHistory } from "@/hooks/useJobHistory";
-import { useJobStatus } from "@/hooks/useJobStatus";
 import { downloadUrl } from "@/lib/api";
 
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
@@ -182,14 +179,12 @@ function BatchItemModal({
 
 export default function Home() {
   const batch = useBatchConvert();
-  const history = useJobHistory();
   const pdfExport = useGeneratePdf();
-  const [historyJobId, setHistoryJobId] = useState<string | null>(null);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
-  const historyJob = useJobStatus(historyJobId);
-
-  // Selecting a history entry views that job instead of the live batch.
-  const viewingHistory = historyJobId !== null;
+  const [addingMore, setAddingMore] = useState(false);
+  const [introImages, setIntroImages] = useState<File[]>([]);
+  const [outroImages, setOutroImages] = useState<File[]>([]);
+  const [paletteBackgrounds, setPaletteBackgrounds] = useState<File[]>([]);
 
   const batchStarted = batch.items.length > 0;
   const batchFinished = batchStarted && batch.items.every(isItemFinished);
@@ -203,25 +198,41 @@ export default function Home() {
   const handleGeneratePdf = useCallback(() => {
     void pdfExport.generate(
       succeededItems.map((item) => ({ jobId: item.status.job_id, fileName: item.fileName })),
+      { introImages, outroImages, paletteBackgrounds },
     );
-  }, [pdfExport, succeededItems]);
+  }, [pdfExport, succeededItems, introImages, outroImages, paletteBackgrounds]);
+
+  const handleIntroImagesChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setIntroImages(Array.from(event.target.files ?? []));
+  }, []);
+
+  const handleOutroImagesChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setOutroImages(Array.from(event.target.files ?? []));
+  }, []);
+
+  const handlePaletteBackgroundsChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setPaletteBackgrounds(Array.from(event.target.files ?? []));
+  }, []);
 
   const handleSubmit = useCallback(
     (files: File[]) => {
-      setHistoryJobId(null);
       setOpenItemId(null);
       batch.submit(files);
     },
     [batch],
   );
 
-  const handleSelectHistory = useCallback((jobId: string) => {
-    setHistoryJobId(jobId);
-  }, []);
+  const handleAddMore = useCallback(
+    (files: File[]) => {
+      setAddingMore(false);
+      batch.addFiles(files);
+    },
+    [batch],
+  );
 
   const handleStartOver = useCallback(() => {
-    setHistoryJobId(null);
     setOpenItemId(null);
+    setAddingMore(false);
     batch.reset();
   }, [batch]);
 
@@ -244,107 +255,114 @@ export default function Home() {
           <h2 id="upload-heading" className="sr-only">
             Upload
           </h2>
-          {!batchStarted && !viewingHistory ? (
+          {!batchStarted ? (
             <Uploader onSubmit={handleSubmit} />
+          ) : addingMore ? (
+            <Uploader onSubmit={handleAddMore} />
           ) : (
-            <button
-              type="button"
-              onClick={handleStartOver}
-              className="self-start text-sm text-foreground/70 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              ← Start a new conversion
-            </button>
+            <div className="flex flex-wrap gap-4">
+              <button
+                type="button"
+                onClick={() => setAddingMore(true)}
+                className="self-start text-sm text-foreground/70 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                + Add more photos
+              </button>
+              <button
+                type="button"
+                onClick={handleStartOver}
+                className="self-start text-sm text-foreground/70 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                ← Start a new conversion
+              </button>
+            </div>
           )}
         </section>
 
-        {viewingHistory ? (
+        {batchStarted && (
           <section aria-labelledby="progress-heading" className="flex flex-col gap-4">
-            <h2 id="progress-heading" className="sr-only">
-              Conversion status
-            </h2>
-            {historyJob.error && (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 id="progress-heading" className="text-sm font-semibold">
+                {batchFinished
+                  ? `Finished ${doneCount} of ${batch.items.length}`
+                  : `Converting… ${doneCount} of ${batch.items.length} done`}
+              </h2>
+              {batchFinished && succeededItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleGeneratePdf}
+                  disabled={pdfExport.generating}
+                  className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                >
+                  {pdfExport.generating
+                    ? `Generating PDF… ${pdfExport.progress?.done ?? 0}/${pdfExport.progress?.total ?? succeededItems.length}`
+                    : "Generate PDF"}
+                </button>
+              )}
+            </div>
+            {batchFinished && succeededItems.length > 0 && (
+              <div className="flex flex-wrap gap-4 text-sm">
+                <label className="flex flex-col gap-1">
+                  <span className="text-foreground/70">Intro pages (before content)</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleIntroImagesChange}
+                    className="text-xs"
+                  />
+                  {introImages.length > 0 && (
+                    <span className="text-xs text-foreground/60">{introImages.length} image(s) selected</span>
+                  )}
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-foreground/70">Outro pages (after content)</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleOutroImagesChange}
+                    className="text-xs"
+                  />
+                  {outroImages.length > 0 && (
+                    <span className="text-xs text-foreground/60">{outroImages.length} image(s) selected</span>
+                  )}
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-foreground/70">Palette backgrounds (cycled per item)</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handlePaletteBackgroundsChange}
+                    className="text-xs"
+                  />
+                  {paletteBackgrounds.length > 0 && (
+                    <span className="text-xs text-foreground/60">
+                      {paletteBackgrounds.length} image(s) selected
+                    </span>
+                  )}
+                </label>
+              </div>
+            )}
+            {pdfExport.error && (
               <p role="alert" className="text-sm text-red-600 dark:text-red-400">
-                {historyJob.error}
+                {pdfExport.error}
               </p>
             )}
-            {historyJob.status && (
-              <>
-                <JobProgress status={historyJob.status} onCancel={() => undefined} />
-                {historyJob.status.state === "succeeded" && historyJob.status.downloads && (
-                  <>
-                    <PreviewViewer jobId={historyJob.status.job_id} />
-                    <DownloadButtons
-                      jobId={historyJob.status.job_id}
-                      availableArtifacts={historyJob.status.downloads}
-                    />
-                  </>
-                )}
-              </>
-            )}
+            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+              {batch.items.map((item) => (
+                <li key={item.id}>
+                  <BatchItemTile
+                    item={item}
+                    onOpen={setOpenItemId}
+                    onCancel={batch.cancelItem}
+                  />
+                </li>
+              ))}
+            </ul>
           </section>
-        ) : (
-          batchStarted && (
-            <section aria-labelledby="progress-heading" className="flex flex-col gap-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 id="progress-heading" className="text-sm font-semibold">
-                  {batchFinished
-                    ? `Finished ${doneCount} of ${batch.items.length}`
-                    : `Converting… ${doneCount} of ${batch.items.length} done`}
-                </h2>
-                {batchFinished && succeededItems.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleGeneratePdf}
-                    disabled={pdfExport.generating}
-                    className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                  >
-                    {pdfExport.generating
-                      ? `Generating PDF… ${pdfExport.progress?.done ?? 0}/${pdfExport.progress?.total ?? succeededItems.length}`
-                      : "Generate PDF"}
-                  </button>
-                )}
-              </div>
-              {pdfExport.error && (
-                <p role="alert" className="text-sm text-red-600 dark:text-red-400">
-                  {pdfExport.error}
-                </p>
-              )}
-              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-                {batch.items.map((item) => (
-                  <li key={item.id}>
-                    <BatchItemTile
-                      item={item}
-                      onOpen={setOpenItemId}
-                      onCancel={batch.cancelItem}
-                    />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )
         )}
-
-        <section aria-labelledby="history-heading" className="flex flex-col gap-3 border-t border-border pt-6">
-          <div className="flex items-center justify-between">
-            <h2 id="history-heading" className="text-sm font-semibold">
-              Job history
-            </h2>
-            {history.entries.length > 0 && (
-              <button
-                type="button"
-                onClick={history.clear}
-                className="text-xs text-foreground/60 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                Clear all
-              </button>
-            )}
-          </div>
-          <JobHistoryList
-            entries={history.entries}
-            onSelect={handleSelectHistory}
-            onRemove={history.remove}
-          />
-        </section>
       </main>
 
       {openItem && (

@@ -32,6 +32,19 @@ export interface PdfExportProgress {
   total: number;
 }
 
+export interface PdfExportOptions {
+  /** Full-bleed pages inserted before the per-item content, in order. */
+  introImages?: Blob[];
+  /** Full-bleed pages inserted after the summary grid, in order. */
+  outroImages?: Blob[];
+  /**
+   * Full-bleed background images drawn behind each item's palette page,
+   * cycling by item index — e.g. 2 backgrounds across 10 items repeats each
+   * one 5 times, same cycling pattern as SHAPE_CYCLE.
+   */
+  paletteBackgrounds?: Blob[];
+}
+
 async function blobToDataUrl(blob: Blob): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -295,9 +308,17 @@ function drawPaletteColumn(
  * a final summary page (or pages) listing every conversion's colored
  * preview as a 5-per-row, 25-per-page grid of thumbnails.
  */
+async function addFullBleedImagePage(doc: jsPDF, blob: Blob, isFirstPage: boolean): Promise<void> {
+  const dataUrl = await blobToDataUrl(blob);
+  const img = await loadImage(dataUrl);
+  if (!isFirstPage) doc.addPage();
+  drawCover(doc, img, dataUrl, 0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM);
+}
+
 export async function generateBatchPdf(
   items: PdfExportItem[],
   onProgress?: (progress: PdfExportProgress) => void,
+  options?: PdfExportOptions,
 ): Promise<Blob> {
   // No stream filters + high coordinate precision: this PDF is meant for
   // print (KDP), so favor maximum sharpness over file size. `filters`
@@ -318,6 +339,21 @@ export async function generateBatchPdf(
   const total = items.length;
   onProgress?.({ done, total });
 
+  const introImages = options?.introImages ?? [];
+  let pageStarted = false;
+  for (const introBlob of introImages) {
+    await addFullBleedImagePage(doc, introBlob, !pageStarted);
+    pageStarted = true;
+  }
+
+  const paletteBackgrounds = await Promise.all(
+    (options?.paletteBackgrounds ?? []).map(async (blob) => {
+      const dataUrl = await blobToDataUrl(blob);
+      const img = await loadImage(dataUrl);
+      return { dataUrl, img };
+    }),
+  );
+
   for (const [index, item] of items.entries()) {
     const [outlineBlob, coloredBlob, swatches] = await Promise.all([
       fetchArtifactBlob(item.jobId, "preview_lineart"),
@@ -333,7 +369,13 @@ export async function generateBatchPdf(
       loadImage(coloredDataUrl),
     ]);
 
-    if (index > 0) doc.addPage();
+    if (index > 0 || pageStarted) doc.addPage();
+    pageStarted = true;
+
+    if (paletteBackgrounds.length > 0) {
+      const bg = paletteBackgrounds[index % paletteBackgrounds.length];
+      drawCover(doc, bg.img, bg.dataUrl, 0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM);
+    }
 
     const shape = SHAPE_CYCLE[index % SHAPE_CYCLE.length];
     // Shrink the note box width (columns scale with it) if the palette
@@ -380,7 +422,10 @@ export async function generateBatchPdf(
 
   for (let i = 0; i < thumbnails.length; i += 1) {
     const posOnPage = i % SUMMARY_PER_PAGE;
-    if (posOnPage === 0) doc.addPage();
+    if (posOnPage === 0) {
+      if (pageStarted) doc.addPage();
+      pageStarted = true;
+    }
     const col = posOnPage % SUMMARY_COLUMNS;
     const row = Math.floor(posOnPage / SUMMARY_COLUMNS);
     const x = MARGIN_MM + col * (cellWidth + GAP_MM);
@@ -388,6 +433,12 @@ export async function generateBatchPdf(
 
     const { dataUrl, img } = thumbnails[i];
     drawContained(doc, img, dataUrl, x, y, cellWidth, cellHeight);
+  }
+
+  const outroImages = options?.outroImages ?? [];
+  for (const outroBlob of outroImages) {
+    await addFullBleedImagePage(doc, outroBlob, !pageStarted);
+    pageStarted = true;
   }
 
   return doc.output("blob");

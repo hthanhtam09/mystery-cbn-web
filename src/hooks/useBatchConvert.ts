@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, cancelJob, getJobStatus, submitConvert } from "@/lib/api";
 import type { JobStatusResponse } from "@/lib/api";
-import { addHistoryEntry, updateHistoryState } from "@/lib/jobHistory";
 
 const POLL_INTERVAL_MS = 1000;
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
@@ -34,6 +33,8 @@ export interface UseBatchConvertResult {
   items: BatchItem[];
   /** Starts a new batch, replacing any previous one. */
   submit: (files: File[]) => void;
+  /** Appends files to the current batch, leaving existing items untouched. */
+  addFiles: (files: File[]) => void;
   /** Cancels one item — dequeues it locally or asks the API to cancel its job. */
   cancelItem: (id: string) => void;
   /** Clears the batch view; already-submitted jobs keep running server-side. */
@@ -87,13 +88,6 @@ export function useBatchConvert(): UseBatchConvertResult {
       if (generationRef.current !== generation) return false;
 
       jobIdsRef.current.set(id, jobId);
-      addHistoryEntry({
-        jobId,
-        fileName: file.name,
-        preset: FIXED_PRESET,
-        submittedAt: new Date().toISOString(),
-        lastKnownState: "pending",
-      });
       updateItem(id, {
         jobId,
         status: {
@@ -120,7 +114,6 @@ export function useBatchConvert(): UseBatchConvertResult {
               return;
             }
             updateItem(id, { status });
-            updateHistoryState(jobId, status.state);
             if (TERMINAL_STATES.has(status.state)) {
               timersRef.current.delete(id);
               resolve(true);
@@ -189,6 +182,20 @@ export function useBatchConvert(): UseBatchConvertResult {
     [pump],
   );
 
+  const addFiles = useCallback(
+    (files: File[]) => {
+      const next: BatchItem[] = files.map((file) => {
+        const id = crypto.randomUUID();
+        filesRef.current.set(id, file);
+        return { id, fileName: file.name, jobId: null, status: null, error: null, queued: true };
+      });
+      queueRef.current.push(...next.map((item) => item.id));
+      setItems((prev) => [...prev, ...next]);
+      pump();
+    },
+    [pump],
+  );
+
   const cancelItem = useCallback(
     (id: string) => {
       const queueIndex = queueRef.current.indexOf(id);
@@ -218,5 +225,5 @@ export function useBatchConvert(): UseBatchConvertResult {
     setItems([]);
   }, []);
 
-  return { items, submit, cancelItem, reset };
+  return { items, submit, addFiles, cancelItem, reset };
 }
