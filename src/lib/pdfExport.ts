@@ -96,6 +96,15 @@ function drawCover(
 
 const PALETTE_SWATCH_MM = 6;
 const PALETTE_GAP_MM = 1;
+// Larger swatch size for the palette's own dedicated page, where there's no
+// outline artwork competing for space.
+const PALETTE_PAGE_SWATCH_MM = 14;
+// Blank note box to the left of each swatch, for the reader to write in.
+const PALETTE_NOTE_WIDTH_MM = 40;
+const PALETTE_NOTE_GAP_MM = 4;
+const PALETTE_ROW_GAP_MM = 4;
+// Horizontal gap between columns once a column fills past PALETTE_MAX_PER_COLUMN.
+const PALETTE_COLUMN_GAP_MM = 6;
 
 type SwatchShape = "square" | "circle" | "hexagon" | "heart";
 const SHAPE_CYCLE: SwatchShape[] = ["square", "circle", "hexagon", "heart"];
@@ -189,7 +198,7 @@ function drawSwatchShape(doc: jsPDF, shape: SwatchShape, cx: number, cy: number,
   const half = size / 2;
   switch (shape) {
     case "square":
-      doc.rect(cx - half, cy - half, size, size, "FD");
+      doc.roundedRect(cx - half, cy - half, size, size, size * 0.18, size * 0.18, "FD");
       return;
     case "circle":
       doc.circle(cx, cy, half, "FD");
@@ -203,72 +212,88 @@ function drawSwatchShape(doc: jsPDF, shape: SwatchShape, cx: number, cy: number,
   }
 }
 
-function paletteStripRows(swatchCount: number, contentWidth: number): number {
-  const perRow = Math.max(1, Math.floor((contentWidth + PALETTE_GAP_MM) / (PALETTE_SWATCH_MM + PALETTE_GAP_MM)));
-  return Math.ceil(swatchCount / perRow);
+const PALETTE_MAX_PER_COLUMN = 10;
+
+function paletteColumnCount(swatchCount: number): number {
+  return Math.ceil(swatchCount / PALETTE_MAX_PER_COLUMN);
 }
 
-function paletteStripHeight(swatchCount: number, contentWidth: number): number {
-  return paletteStripRows(swatchCount, contentWidth) * (PALETTE_SWATCH_MM + PALETTE_GAP_MM) - PALETTE_GAP_MM;
+function paletteColumnHeight(swatchCount: number, swatchSize: number, rowGap: number): number {
+  const rows = Math.min(swatchCount, PALETTE_MAX_PER_COLUMN);
+  return rows * swatchSize + (rows - 1) * rowGap;
 }
 
 /**
- * Draws a single horizontal strip of palette swatches — real colors, one
- * shape shared by every swatch in the strip (so a whole item's palette
- * reads as "all squares" or "all hearts"), code centered inside each —
- * anchored at `top`, spanning `contentWidth`, wrapping to further rows
- * beneath as needed.
+ * Draws the palette as one or more columns, each running top to bottom and
+ * capped at `PALETTE_MAX_PER_COLUMN` swatches — once a column fills up, the
+ * next column starts to its left, so a long palette grows leftward across
+ * the page rather than overflowing past the bottom margin. Each row pairs a
+ * blank note box (for the reader to write a name/word onto, with a "...."
+ * placeholder) with a real-color swatch to its right, sized/shaped per
+ * `shape` with its code centered inside. `right`/`top` anchor the
+ * rightmost column so callers can keep it inside the page's safe margin.
  */
-function drawPaletteStrip(
+function drawPaletteColumn(
   doc: jsPDF,
   swatches: PaletteSwatch[],
   shape: SwatchShape,
-  contentWidth: number,
-  left: number,
+  right: number,
   top: number,
+  swatchSize: number,
+  rowGap: number,
+  noteWidth: number,
+  noteGap: number,
+  columnGap: number,
+  fontSize: number,
 ): void {
-  const perRow = Math.max(1, Math.floor((contentWidth + PALETTE_GAP_MM) / (PALETTE_SWATCH_MM + PALETTE_GAP_MM)));
-  const rowStride = PALETTE_SWATCH_MM + PALETTE_GAP_MM;
+  const rowStride = swatchSize + rowGap;
+  const cornerRadius = swatchSize * 0.18;
+  const columnStride = noteWidth + noteGap + swatchSize + columnGap;
 
   for (const [i, swatch] of swatches.entries()) {
-    const col = i % perRow;
-    const row = Math.floor(i / perRow);
-    const itemsInRow = Math.min(perRow, swatches.length - row * perRow);
-    const rowWidth = itemsInRow * PALETTE_SWATCH_MM + (itemsInRow - 1) * PALETTE_GAP_MM;
-    const rowLeft = left + (contentWidth - rowWidth) / 2;
-    const cx = rowLeft + col * rowStride + PALETTE_SWATCH_MM / 2;
-    const cy = top + row * rowStride + PALETTE_SWATCH_MM / 2;
+    const col = Math.floor(i / PALETTE_MAX_PER_COLUMN);
+    const row = i % PALETTE_MAX_PER_COLUMN;
+    const columnRight = right - col * columnStride;
+    const cy = top + row * rowStride + swatchSize / 2;
+    const cx = columnRight - swatchSize / 2;
+    const noteLeft = cx - swatchSize / 2 - noteGap - noteWidth;
 
     doc.setDrawColor(0, 0, 0);
     doc.setLineWidth(0.15);
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(noteLeft, cy - swatchSize / 2, noteWidth, swatchSize, cornerRadius, cornerRadius, "S");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(fontSize);
+    doc.setTextColor(150, 150, 150);
+    doc.text("......................", noteLeft + noteWidth / 2, cy + swatchSize * 0.15, {
+      align: "center",
+      baseline: "middle",
+    });
+    doc.setTextColor(0, 0, 0);
+
     doc.setFillColor(swatch.r, swatch.g, swatch.b);
-    drawSwatchShape(doc, shape, cx, cy, PALETTE_SWATCH_MM);
+    drawSwatchShape(doc, shape, cx, cy, swatchSize);
 
     const textColor = relativeLuminance(swatch.r, swatch.g, swatch.b) > 140 ? 0 : 255;
     doc.setTextColor(textColor, textColor, textColor);
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(6);
-    const [labelX, labelY] = swatchLabelAnchor(shape, cx, cy, PALETTE_SWATCH_MM);
+    doc.setFontSize(fontSize);
+    const [labelX, labelY] = swatchLabelAnchor(shape, cx, cy, swatchSize);
     doc.text(swatch.code, labelX, labelY, { align: "center", baseline: "middle" });
     doc.setFont("helvetica", "normal");
     doc.setTextColor(0, 0, 0);
   }
 }
 
-// Palette strip sits inside the safe margin at the bottom of the outline
-// page rather than on its own page, so it must never encroach on the
-// bleed/trim edge. The outline artwork is shrunk to leave this band clear
-// instead of being covered by the strip.
-const PALETTE_STRIP_BOTTOM_GAP_MM = 3;
-const PALETTE_STRIP_TOP_GAP_MM = 1.5;
-
 /**
- * Builds one combined PDF for a finished batch: for each item, a single
- * page with the outline artwork (shrunk to leave room at the bottom) plus a
- * palette strip below it — real colors, one shape per item cycling through
- * square/circle/hexagon/heart across the batch, code centered inside each
- * swatch — then a final summary page (or pages) listing every conversion's
- * colored preview as a 5-per-row, 25-per-page grid of thumbnails.
+ * Builds one combined PDF for a finished batch: for each item, a dedicated
+ * palette page — swatches in a single right-aligned column running top to
+ * bottom inside the safe margin, each paired with a blank note box on its
+ * left for the reader to write on, real colors, one shape per item cycling
+ * through square/circle/hexagon/heart across the batch, code centered
+ * inside each swatch — followed by a full-bleed outline artwork page, then
+ * a final summary page (or pages) listing every conversion's colored
+ * preview as a 5-per-row, 25-per-page grid of thumbnails.
  */
 export async function generateBatchPdf(
   items: PdfExportItem[],
@@ -310,13 +335,39 @@ export async function generateBatchPdf(
 
     if (index > 0) doc.addPage();
 
-    const stripHeight = paletteStripHeight(swatches.length, contentWidth);
-    const stripTop = PAGE_HEIGHT_MM - MARGIN_MM - PALETTE_STRIP_BOTTOM_GAP_MM - stripHeight;
-    const outlineBottom = stripTop - PALETTE_STRIP_TOP_GAP_MM;
-    drawCover(doc, outlineImg, outlineDataUrl, 0, 0, PAGE_WIDTH_MM, outlineBottom);
-
     const shape = SHAPE_CYCLE[index % SHAPE_CYCLE.length];
-    drawPaletteStrip(doc, swatches, shape, contentWidth, MARGIN_MM, stripTop);
+    // Shrink the note box width (columns scale with it) if the palette
+    // needs more columns than fit across the page's safe content width —
+    // keeps a long palette inside the margin instead of running past the
+    // left edge.
+    const columns = paletteColumnCount(swatches.length);
+    const naturalColumnWidth = PALETTE_NOTE_WIDTH_MM + PALETTE_NOTE_GAP_MM + PALETTE_PAGE_SWATCH_MM;
+    const naturalWidth = columns * naturalColumnWidth + (columns - 1) * PALETTE_COLUMN_GAP_MM;
+    const shrink = Math.min(1, contentWidth / naturalWidth);
+    const swatchSize = PALETTE_PAGE_SWATCH_MM * shrink;
+    const rowGap = PALETTE_ROW_GAP_MM * shrink;
+    const noteWidth = PALETTE_NOTE_WIDTH_MM * shrink;
+    const noteGap = PALETTE_NOTE_GAP_MM * shrink;
+    const columnGap = PALETTE_COLUMN_GAP_MM * shrink;
+    const columnHeight = paletteColumnHeight(swatches.length, swatchSize, rowGap);
+    const columnTop = MARGIN_MM + (contentHeight - columnHeight) / 2;
+    const columnRight = PAGE_WIDTH_MM - MARGIN_MM - 0.3 * IN_TO_MM;
+    drawPaletteColumn(
+      doc,
+      swatches,
+      shape,
+      columnRight,
+      columnTop,
+      swatchSize,
+      rowGap,
+      noteWidth,
+      noteGap,
+      columnGap,
+      Math.max(4, 10 * shrink),
+    );
+
+    doc.addPage();
+    drawCover(doc, outlineImg, outlineDataUrl, 0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM);
 
     thumbnails.push({ dataUrl: coloredDataUrl, img: coloredImg });
 
