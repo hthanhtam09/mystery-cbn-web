@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, cancelJob, getJobStatus, submitConvert } from "@/lib/api";
-import type { JobStatusResponse } from "@/lib/api";
+import type { JobStatusResponse, Preset } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 1000;
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
@@ -11,10 +11,18 @@ const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
 // thread pool has 4 workers; 3 leaves headroom for other clients.
 const MAX_CONCURRENT = 3;
 
-// Fixed conversion settings: every job runs the commercial "mystery" style
-// via the engine's "dense" preset — no user-facing choice, so upload is the
-// only step (see useConvertJob for the full rationale).
-const FIXED_PRESET = "dense";
+// Default conversion style: the commercial "mystery" look via the engine's
+// "dense" preset. The style tab lets the user switch to "partial" (leave the
+// largest regions unnumbered) instead — see StyleSelector.
+const DEFAULT_PRESET: Preset = "dense";
+
+/** Per-batch conversion style: same preset/overrides apply to every item. */
+export interface ConvertStyle {
+  preset: Preset;
+  overrides?: Record<string, unknown>;
+  /** Hand-drawn mask bitmap (base64 PNG) for "partial" mode. */
+  maskBitmap?: string | null;
+}
 
 export interface BatchItem {
   /** Local id — stable before the server assigns a job_id. */
@@ -32,9 +40,9 @@ export interface BatchItem {
 export interface UseBatchConvertResult {
   items: BatchItem[];
   /** Starts a new batch, replacing any previous one. */
-  submit: (files: File[]) => void;
+  submit: (files: File[], style?: ConvertStyle) => void;
   /** Appends files to the current batch, leaving existing items untouched. */
-  addFiles: (files: File[]) => void;
+  addFiles: (files: File[], style?: ConvertStyle) => void;
   /** Cancels one item — dequeues it locally or asks the API to cancel its job. */
   cancelItem: (id: string) => void;
   /** Clears the batch view; already-submitted jobs keep running server-side. */
@@ -49,6 +57,7 @@ export interface UseBatchConvertResult {
 export function useBatchConvert(): UseBatchConvertResult {
   const [items, setItems] = useState<BatchItem[]>([]);
   const filesRef = useRef<Map<string, File>>(new Map());
+  const stylesRef = useRef<Map<string, ConvertStyle>>(new Map());
   const queueRef = useRef<string[]>([]);
   const inFlightRef = useRef(0);
   const timersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -75,9 +84,20 @@ export function useBatchConvert(): UseBatchConvertResult {
       const file = filesRef.current.get(id);
       if (!file) return false;
 
+      const style = stylesRef.current.get(id);
       let jobId: string;
       try {
-        const response = await submitConvert({ file, preset: FIXED_PRESET });
+        const overrides = style?.overrides ? { ...style.overrides } : {};
+        // If hand-drawn mask bitmap is provided, add it to overrides.mask
+        if (style?.maskBitmap) {
+          if (!overrides.mask) overrides.mask = {};
+          (overrides.mask as Record<string, unknown>).bitmap = style.maskBitmap;
+        }
+        const response = await submitConvert({
+          file,
+          preset: style?.preset ?? DEFAULT_PRESET,
+          overrides: Object.keys(overrides).length > 0 ? overrides : undefined,
+        });
         jobId = response.job_id;
       } catch (err) {
         if (generationRef.current !== generation) return false;
@@ -161,11 +181,12 @@ export function useBatchConvert(): UseBatchConvertResult {
   }, [runItem, updateItem]);
 
   const submit = useCallback(
-    (files: File[]) => {
+    (files: File[], style?: ConvertStyle) => {
       generationRef.current += 1;
       for (const timer of timersRef.current.values()) clearTimeout(timer);
       timersRef.current.clear();
       filesRef.current.clear();
+      stylesRef.current.clear();
       jobIdsRef.current.clear();
       queueRef.current = [];
       inFlightRef.current = 0;
@@ -173,6 +194,7 @@ export function useBatchConvert(): UseBatchConvertResult {
       const next: BatchItem[] = files.map((file) => {
         const id = crypto.randomUUID();
         filesRef.current.set(id, file);
+        if (style) stylesRef.current.set(id, style);
         return { id, fileName: file.name, jobId: null, status: null, error: null, queued: true };
       });
       queueRef.current = next.map((item) => item.id);
@@ -183,10 +205,11 @@ export function useBatchConvert(): UseBatchConvertResult {
   );
 
   const addFiles = useCallback(
-    (files: File[]) => {
+    (files: File[], style?: ConvertStyle) => {
       const next: BatchItem[] = files.map((file) => {
         const id = crypto.randomUUID();
         filesRef.current.set(id, file);
+        if (style) stylesRef.current.set(id, style);
         return { id, fileName: file.name, jobId: null, status: null, error: null, queued: true };
       });
       queueRef.current.push(...next.map((item) => item.id));
@@ -219,6 +242,7 @@ export function useBatchConvert(): UseBatchConvertResult {
     for (const timer of timersRef.current.values()) clearTimeout(timer);
     timersRef.current.clear();
     filesRef.current.clear();
+    stylesRef.current.clear();
     jobIdsRef.current.clear();
     queueRef.current = [];
     inFlightRef.current = 0;

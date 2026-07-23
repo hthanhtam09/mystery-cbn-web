@@ -3,13 +3,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { DownloadButtons } from "@/components/DownloadButtons";
 import { JobProgress } from "@/components/JobProgress";
+import { MaskEditor } from "@/components/MaskEditor";
+import { PreviewCanvas } from "@/components/PreviewCanvas";
 import { PreviewViewer } from "@/components/PreviewViewer";
+import { StyleSelector } from "@/components/StyleSelector";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Uploader } from "@/components/Uploader";
 import { useBatchConvert } from "@/hooks/useBatchConvert";
-import type { BatchItem } from "@/hooks/useBatchConvert";
-import { useGeneratePdf } from "@/hooks/useGeneratePdf";
+import type { BatchItem, ConvertStyle } from "@/hooks/useBatchConvert";
 import { downloadUrl } from "@/lib/api";
+import { useGeneratePdf } from "@/hooks/useGeneratePdf";
 
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -185,6 +188,17 @@ export default function Home() {
   const [introImages, setIntroImages] = useState<File[]>([]);
   const [outroImages, setOutroImages] = useState<File[]>([]);
   const [paletteBackgrounds, setPaletteBackgrounds] = useState<File[]>([]);
+  const [style, setStyle] = useState<ConvertStyle>({ preset: "dense" });
+  // Mask editor state: upload ảnh trước → preview line art + mask editor → convert
+  const [maskEditorActive, setMaskEditorActive] = useState(false);
+  const [maskEditorFile, setMaskEditorFile] = useState<File | null>(null);
+  const [previewLineArt, setPreviewLineArt] = useState<string | null>(null);
+  const [previewColored, setPreviewColored] = useState<string | null>(null);
+  const [maskBitmap, setMaskBitmap] = useState<string | null>(null);
+  const [previewImageDimensions, setPreviewImageDimensions] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
 
   const batchStarted = batch.items.length > 0;
   const batchFinished = batchStarted && batch.items.every(isItemFinished);
@@ -214,20 +228,118 @@ export default function Home() {
     setPaletteBackgrounds(Array.from(event.target.files ?? []));
   }, []);
 
+  const handleMaskEditorStart = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const file = files[0];
+      setMaskEditorFile(file);
+      setMaskEditorActive(true);
+      setMaskBitmap(null);
+
+      // Get file dimensions for canvas
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const dataUrl = e.target?.result as string;
+        const img = new Image();
+        img.onload = async () => {
+          const { width, height } = img;
+          setPreviewImageDimensions({ width, height });
+          setPreviewLineArt(dataUrl);
+
+          // Call API to get preview_colored (full colored image for mask editor preview)
+          try {
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("preset", "partial");
+            formData.append("seed", "0");
+
+            const response = await fetch(
+              `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001"}/v1/convert`,
+              { method: "POST", body: formData }
+            );
+
+            if (!response.ok) {
+              console.error("API convert failed:", response.status);
+              setPreviewColored(dataUrl); // Fallback to original image
+              return;
+            }
+
+            const data = (await response.json()) as { job_id: string };
+            const jobId = data.job_id;
+
+            // Poll job status until complete
+            let completed = false;
+            let attempts = 0;
+            const maxAttempts = 120; // 2 min timeout
+
+            while (!completed && attempts < maxAttempts) {
+              attempts++;
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+
+              const statusResponse = await fetch(
+                `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001"}/v1/job/${jobId}`
+              );
+
+              if (statusResponse.ok) {
+                const status = await statusResponse.json();
+                if (status.state === "succeeded" && status.downloads?.preview_colored) {
+                  // Got the colored preview URL
+                  const previewUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001"}/v1/artifact/${jobId}/preview_colored`;
+                  setPreviewColored(previewUrl);
+                  completed = true;
+                } else if (status.state === "failed") {
+                  console.error("Job failed:", status.error);
+                  setPreviewColored(dataUrl); // Fallback
+                  completed = true;
+                }
+              }
+            }
+
+            if (!completed) {
+              console.error("Job timed out");
+              setPreviewColored(dataUrl); // Fallback
+            }
+          } catch (error) {
+            console.error("Error fetching preview:", error);
+            setPreviewColored(dataUrl); // Fallback to original image
+          }
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    },
+    [],
+  );
+
   const handleSubmit = useCallback(
     (files: File[]) => {
       setOpenItemId(null);
-      batch.submit(files);
+      // If mask editor should be used, start it instead
+      if (style.preset === "partial") {
+        handleMaskEditorStart(files);
+      } else {
+        batch.submit(files, style);
+      }
     },
-    [batch],
+    [batch, style, handleMaskEditorStart],
   );
+
+  const handleMaskSubmit = useCallback(() => {
+    if (!maskEditorFile) return;
+    setMaskEditorActive(false);
+    // Submit with mask bitmap
+    batch.submit([maskEditorFile], {
+      ...style,
+      maskBitmap,
+    });
+  }, [batch, style, maskEditorFile, maskBitmap]);
 
   const handleAddMore = useCallback(
     (files: File[]) => {
       setAddingMore(false);
-      batch.addFiles(files);
+      batch.addFiles(files, style);
     },
-    [batch],
+    [batch, style],
   );
 
   const handleStartOver = useCallback(() => {
@@ -251,16 +363,68 @@ export default function Home() {
       </header>
 
       <main className="flex flex-col gap-6">
-        <section aria-labelledby="upload-heading" className="flex flex-col gap-4">
-          <h2 id="upload-heading" className="sr-only">
-            Upload
-          </h2>
-          {!batchStarted ? (
-            <Uploader onSubmit={handleSubmit} />
-          ) : addingMore ? (
-            <Uploader onSubmit={handleAddMore} />
-          ) : (
-            <div className="flex flex-wrap gap-4">
+        {maskEditorActive && previewLineArt && previewImageDimensions ? (
+          <section className="flex flex-col gap-4">
+            <h2 className="text-lg font-semibold">Draw areas to leave white (uncolored)</h2>
+            <div className="grid grid-cols-2 gap-6">
+              <div>
+                <h3 className="mb-2 text-sm font-semibold">Draw mask</h3>
+                <MaskEditor
+                  imageUrl={previewLineArt}
+                  imageWidth={previewImageDimensions.width}
+                  imageHeight={previewImageDimensions.height}
+                  onMaskChange={setMaskBitmap}
+                />
+              </div>
+              <div>
+                <h3 className="mb-2 text-sm font-semibold">Preview</h3>
+                {previewColored && (
+                  <PreviewCanvas
+                    coloredPreviewUrl={previewColored}
+                    maskBase64={maskBitmap}
+                    width={previewImageDimensions.width}
+                    height={previewImageDimensions.height}
+                  />
+                )}
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setMaskEditorActive(false);
+                  setMaskEditorFile(null);
+                  setPreviewLineArt(null);
+                  setPreviewColored(null);
+                  setMaskBitmap(null);
+                }}
+                className="rounded border border-border px-4 py-2 text-sm hover:bg-surface"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleMaskSubmit}
+                className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+              >
+                Convert with mask
+              </button>
+            </div>
+          </section>
+        ) : (
+          <section aria-labelledby="upload-heading" className="flex flex-col gap-4">
+            <h2 id="upload-heading" className="sr-only">
+              Upload
+            </h2>
+            {!batchStarted ? (
+              <>
+                <StyleSelector style={style} onChange={setStyle} />
+                <Uploader onSubmit={handleSubmit} />
+              </>
+            ) : addingMore ? (
+              <Uploader onSubmit={handleAddMore} />
+            ) : (
+              <div className="flex flex-wrap gap-4">
               <button
                 type="button"
                 onClick={() => setAddingMore(true)}
@@ -276,8 +440,9 @@ export default function Home() {
                 ← Start a new conversion
               </button>
             </div>
-          )}
-        </section>
+            )}
+          </section>
+        )}
 
         {batchStarted && (
           <section aria-labelledby="progress-heading" className="flex flex-col gap-4">

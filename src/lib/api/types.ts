@@ -37,7 +37,7 @@ export interface ErrorResponse {
   message: string;
 }
 
-export type Preset = "easy" | "medium" | "hard" | "dense";
+export type Preset = "easy" | "medium" | "hard" | "dense" | "partial";
 
 export interface SubmitConvertOptions {
   file: File;
