@@ -13,6 +13,8 @@ import { useBatchConvert } from "@/hooks/useBatchConvert";
 import type { BatchItem, ConvertStyle } from "@/hooks/useBatchConvert";
 import { downloadUrl } from "@/lib/api";
 import { useGeneratePdf } from "@/hooks/useGeneratePdf";
+import { useGenerateZip } from "@/hooks/useGenerateZip";
+import { useImportFolder } from "@/hooks/useImportFolder";
 
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -183,6 +185,9 @@ function BatchItemModal({
 export default function Home() {
   const batch = useBatchConvert();
   const pdfExport = useGeneratePdf();
+  const zipExport = useGenerateZip();
+  const importFolder = useImportFolder();
+  const [importMode, setImportMode] = useState(false);
   const [openItemId, setOpenItemId] = useState<string | null>(null);
   const [addingMore, setAddingMore] = useState(false);
   const [introImages, setIntroImages] = useState<File[]>([]);
@@ -215,6 +220,32 @@ export default function Home() {
       { introImages, outroImages, paletteBackgrounds },
     );
   }, [pdfExport, succeededItems, introImages, outroImages, paletteBackgrounds]);
+
+  const handleGenerateZip = useCallback(() => {
+    void zipExport.generate(
+      succeededItems.map((item) => ({ jobId: item.status.job_id, fileName: item.fileName })),
+    );
+  }, [zipExport, succeededItems]);
+
+  const handleImportFolderChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (files && files.length > 0) importFolder.importFromFileList(files);
+    },
+    [importFolder],
+  );
+
+  const handleImportZipChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (file) void importFolder.importFromZip(file);
+    },
+    [importFolder],
+  );
+
+  const handleGeneratePdfFromImport = useCallback(() => {
+    void importFolder.generatePdf({ introImages, outroImages, paletteBackgrounds });
+  }, [importFolder, introImages, outroImages, paletteBackgrounds]);
 
   const handleIntroImagesChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     setIntroImages(Array.from(event.target.files ?? []));
@@ -363,7 +394,120 @@ export default function Home() {
       </header>
 
       <main className="flex flex-col gap-6">
-        {maskEditorActive && previewLineArt && previewImageDimensions ? (
+        {importMode ? (
+          <section aria-labelledby="import-heading" className="flex flex-col gap-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="import-heading" className="text-lg font-semibold">
+                Import outline/colored/palette
+              </h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setImportMode(false);
+                  importFolder.reset();
+                }}
+                className="text-sm text-foreground/70 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                ← Back to conversion
+              </button>
+            </div>
+
+            {importFolder.items.length === 0 ? (
+              <div className="flex flex-wrap gap-4 text-sm">
+                <label className="flex flex-col gap-1">
+                  <span className="text-foreground/70">Import ZIP file</span>
+                  <input type="file" accept=".zip" onChange={handleImportZipChange} className="text-xs" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-foreground/70">Or import an extracted folder</span>
+                  <input
+                    type="file"
+                    multiple
+                    ref={(el) => {
+                      if (el) el.setAttribute("webkitdirectory", "true");
+                    }}
+                    onChange={handleImportFolderChange}
+                    className="text-xs"
+                  />
+                </label>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-foreground/70">
+                  {importFolder.items.length} item(s) matched — ready to export, no conversion needed.
+                </p>
+                <div className="flex flex-wrap gap-4 text-sm">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-foreground/70">Intro pages (before content)</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleIntroImagesChange}
+                      className="text-xs"
+                    />
+                    {introImages.length > 0 && (
+                      <span className="text-xs text-foreground/60">{introImages.length} image(s) selected</span>
+                    )}
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-foreground/70">Outro pages (after content)</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleOutroImagesChange}
+                      className="text-xs"
+                    />
+                    {outroImages.length > 0 && (
+                      <span className="text-xs text-foreground/60">{outroImages.length} image(s) selected</span>
+                    )}
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-foreground/70">Palette backgrounds (cycled per item)</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handlePaletteBackgroundsChange}
+                      className="text-xs"
+                    />
+                    {paletteBackgrounds.length > 0 && (
+                      <span className="text-xs text-foreground/60">
+                        {paletteBackgrounds.length} image(s) selected
+                      </span>
+                    )}
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleGeneratePdfFromImport}
+                    disabled={importFolder.generating}
+                    className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {importFolder.generating
+                      ? `Generating PDF… ${importFolder.progress?.done ?? 0}/${importFolder.progress?.total ?? importFolder.items.length}`
+                      : "Generate PDF"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={importFolder.reset}
+                    className="rounded border border-border px-4 py-2 text-sm hover:bg-surface"
+                  >
+                    Start over
+                  </button>
+                </div>
+              </>
+            )}
+
+            {importFolder.error && (
+              <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+                {importFolder.error}
+              </p>
+            )}
+          </section>
+        ) : maskEditorActive && previewLineArt && previewImageDimensions ? (
           <section className="flex flex-col gap-4">
             <h2 className="text-lg font-semibold">Draw areas to leave white (uncolored)</h2>
             <div className="grid grid-cols-2 gap-6">
@@ -416,10 +560,17 @@ export default function Home() {
             <h2 id="upload-heading" className="sr-only">
               Upload
             </h2>
-            {!batchStarted ? (
+            {!batchStarted && !importMode ? (
               <>
                 <StyleSelector style={style} onChange={setStyle} />
                 <Uploader onSubmit={handleSubmit} />
+                <button
+                  type="button"
+                  onClick={() => setImportMode(true)}
+                  className="self-start text-sm text-foreground/70 underline decoration-dotted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                >
+                  Or import a previously exported ZIP/folder →
+                </button>
               </>
             ) : addingMore ? (
               <Uploader onSubmit={handleAddMore} />
@@ -453,18 +604,35 @@ export default function Home() {
                   : `Converting… ${doneCount} of ${batch.items.length} done`}
               </h2>
               {batchFinished && succeededItems.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleGeneratePdf}
-                  disabled={pdfExport.generating}
-                  className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                >
-                  {pdfExport.generating
-                    ? `Generating PDF… ${pdfExport.progress?.done ?? 0}/${pdfExport.progress?.total ?? succeededItems.length}`
-                    : "Generate PDF"}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleGeneratePdf}
+                    disabled={pdfExport.generating}
+                    className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {pdfExport.generating
+                      ? `Generating PDF… ${pdfExport.progress?.done ?? 0}/${pdfExport.progress?.total ?? succeededItems.length}`
+                      : "Generate PDF"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleGenerateZip}
+                    disabled={zipExport.generating}
+                    className="inline-flex items-center justify-center rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-surface disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {zipExport.generating
+                      ? `Exporting ZIP… ${zipExport.progress?.done ?? 0}/${zipExport.progress?.total ?? succeededItems.length}`
+                      : "Export ZIP (outline/colored/palette)"}
+                  </button>
+                </div>
               )}
             </div>
+            {zipExport.error && (
+              <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+                {zipExport.error}
+              </p>
+            )}
             {batchFinished && succeededItems.length > 0 && (
               <div className="flex flex-wrap gap-4 text-sm">
                 <label className="flex flex-col gap-1">
