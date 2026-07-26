@@ -3,12 +3,13 @@ import JSZip from "jszip";
 import {
   addFullBleedImagePage,
   blobToDataUrl,
-  drawContained,
   drawCover,
+  drawSummaryCell,
   loadImage,
   MARGIN_MM,
   PAGE_HEIGHT_MM,
   PAGE_WIDTH_MM,
+  SUMMARY_LABEL_HEIGHT_MM,
 } from "@/lib/pdfExport";
 import type { PdfExportOptions, PdfExportProgress } from "@/lib/pdfExport";
 
@@ -20,8 +21,8 @@ export interface ImportedItem {
   paletteBlob: Blob;
 }
 
-const SUMMARY_COLUMNS = 5;
-const SUMMARY_ROWS = 5;
+const SUMMARY_COLUMNS = 2;
+const SUMMARY_ROWS = 2;
 const SUMMARY_PER_PAGE = SUMMARY_COLUMNS * SUMMARY_ROWS;
 const GAP_MM = 4;
 
@@ -182,6 +183,8 @@ export async function generateBatchPdfFromFolder(
 
   const cellWidth = (contentWidth - GAP_MM * (SUMMARY_COLUMNS - 1)) / SUMMARY_COLUMNS;
   const cellHeight = (contentHeight - GAP_MM * (SUMMARY_ROWS - 1)) / SUMMARY_ROWS;
+  const imageHeight = cellHeight - SUMMARY_LABEL_HEIGHT_MM;
+  const captions = options?.captions ?? [];
 
   for (let i = 0; i < thumbnails.length; i += 1) {
     const posOnPage = i % SUMMARY_PER_PAGE;
@@ -195,7 +198,7 @@ export async function generateBatchPdfFromFolder(
     const y = MARGIN_MM + row * (cellHeight + GAP_MM);
 
     const { dataUrl, img } = thumbnails[i];
-    drawContained(doc, img, dataUrl, x, y, cellWidth, cellHeight);
+    drawSummaryCell(doc, img, dataUrl, { x, y, width: cellWidth, imageHeight }, i + 1, captions[i]);
   }
 
   const outroImages = options?.outroImages ?? [];

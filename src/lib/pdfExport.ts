@@ -19,9 +19,80 @@ export const PAGE_HEIGHT_MM = TRIM_HEIGHT_MM + BLEED_MM * 2;
 export const MARGIN_MM = 0.375 * IN_TO_MM;
 const GAP_MM = 4;
 
-const SUMMARY_COLUMNS = 5;
-const SUMMARY_ROWS = 5;
+const SUMMARY_COLUMNS = 2;
+const SUMMARY_ROWS = 2;
 const SUMMARY_PER_PAGE = SUMMARY_COLUMNS * SUMMARY_ROWS;
+// Reserved below each thumbnail for its item number and caption text.
+export const SUMMARY_LABEL_HEIGHT_MM = 22;
+const SUMMARY_NUMBER_AREA_MM = 7;
+const SUMMARY_NUMBER_PT = 20;
+const SUMMARY_CAPTION_PT = 11;
+const SUMMARY_CAPTION_LINE_HEIGHT_MM = SUMMARY_CAPTION_PT * 0.3528 * 1.15;
+
+/** Strips a leading "1. "/"1) "/"1 - " style index a caption may already carry, so it isn't duplicated by the number drawn above it. */
+function stripLeadingIndex(text: string): string {
+  return text.replace(/^\s*\d+\s*[.):-]\s*/, "");
+}
+
+/**
+ * Draws one summary-grid cell: a bordered, contained thumbnail, its item
+ * number centered below it, then the caption (if any) wrapped to fit the
+ * cell's width and clamped to the label area's height — truncated with an
+ * ellipsis rather than overflowing into the row below or a neighboring cell.
+ */
+export interface SummaryCellRect {
+  x: number;
+  y: number;
+  width: number;
+  imageHeight: number;
+}
+
+export function drawSummaryCell(
+  doc: jsPDF,
+  img: HTMLImageElement,
+  dataUrl: string,
+  rect: SummaryCellRect,
+  itemNumber: number,
+  caption: string | undefined,
+): void {
+  const { x, y, width: cellWidth, imageHeight } = rect;
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.3);
+  doc.rect(x, y, cellWidth, imageHeight, "S");
+  drawContained(doc, img, dataUrl, x, y, cellWidth, imageHeight);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(SUMMARY_NUMBER_PT);
+  doc.setTextColor(0, 0, 0);
+  doc.text(String(itemNumber), x + cellWidth / 2, y + imageHeight + SUMMARY_NUMBER_AREA_MM * 0.6, {
+    align: "center",
+    baseline: "middle",
+  });
+
+  const cleanCaption = caption ? stripLeadingIndex(caption).trim() : "";
+  if (!cleanCaption) return;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(SUMMARY_CAPTION_PT);
+  const maxWidth = cellWidth - 4;
+  const availableHeight = SUMMARY_LABEL_HEIGHT_MM - SUMMARY_NUMBER_AREA_MM;
+  const maxLines = Math.max(1, Math.floor(availableHeight / SUMMARY_CAPTION_LINE_HEIGHT_MM));
+  const lines: string[] = doc.splitTextToSize(cleanCaption, maxWidth);
+  const shown = lines.slice(0, maxLines);
+  if (lines.length > maxLines) {
+    shown[maxLines - 1] = shown[maxLines - 1].trimEnd() + "…";
+  }
+
+  const captionTop = y + imageHeight + SUMMARY_NUMBER_AREA_MM;
+  shown.forEach((line, i) => {
+    doc.text(
+      line,
+      x + cellWidth / 2,
+      captionTop + i * SUMMARY_CAPTION_LINE_HEIGHT_MM + SUMMARY_CAPTION_LINE_HEIGHT_MM / 2,
+      { align: "center", baseline: "middle" },
+    );
+  });
+}
 
 export interface PdfExportItem {
   jobId: string;
@@ -44,6 +115,13 @@ export interface PdfExportOptions {
    * one 5 times, same cycling pattern as SHAPE_CYCLE.
    */
   paletteBackgrounds?: Blob[];
+  /**
+   * Caption text per item, in the same order as `items`, imported from a
+   * CSV (header "text", one row per item in import order). Shown under the
+   * item's number on the summary page. Missing/short arrays leave later
+   * items captionless.
+   */
+  captions?: string[];
 }
 
 export async function blobToDataUrl(blob: Blob): Promise<string> {
@@ -208,6 +286,8 @@ export async function generateBatchPdf(
 
   const cellWidth = (contentWidth - GAP_MM * (SUMMARY_COLUMNS - 1)) / SUMMARY_COLUMNS;
   const cellHeight = (contentHeight - GAP_MM * (SUMMARY_ROWS - 1)) / SUMMARY_ROWS;
+  const imageHeight = cellHeight - SUMMARY_LABEL_HEIGHT_MM;
+  const captions = options?.captions ?? [];
 
   for (let i = 0; i < thumbnails.length; i += 1) {
     const posOnPage = i % SUMMARY_PER_PAGE;
@@ -221,7 +301,7 @@ export async function generateBatchPdf(
     const y = MARGIN_MM + row * (cellHeight + GAP_MM);
 
     const { dataUrl, img } = thumbnails[i];
-    drawContained(doc, img, dataUrl, x, y, cellWidth, cellHeight);
+    drawSummaryCell(doc, img, dataUrl, { x, y, width: cellWidth, imageHeight }, i + 1, captions[i]);
   }
 
   const outroImages = options?.outroImages ?? [];
