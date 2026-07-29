@@ -41,6 +41,10 @@ export interface PageDrawer {
     style: DrawStyle,
   ): void;
   text(str: string, x: number, y: number, opts: TextOptions): void;
+  /** Width (mm) `str` would render at, at `fontSizePt` -- lets callers place
+   * two differently-styled text runs (e.g. a name in black immediately
+   * followed by a gray "#N") adjacently on one line. */
+  measureTextWidth(str: string, fontSizePt: number, bold?: boolean): number;
 }
 
 export class JsPdfDrawer implements PageDrawer {
@@ -112,6 +116,12 @@ export class JsPdfDrawer implements PageDrawer {
     this.doc.setFontSize(opts.fontSizePt);
     this.doc.setTextColor(opts.color[0], opts.color[1], opts.color[2]);
     this.doc.text(str, x, y, { align: opts.align, baseline: opts.baseline });
+  }
+
+  measureTextWidth(str: string, fontSizePt: number, bold = false): number {
+    this.doc.setFont("helvetica", bold ? "bold" : "normal");
+    this.doc.setFontSize(fontSizePt);
+    return this.doc.getTextWidth(str);
   }
 }
 
@@ -224,6 +234,11 @@ export class CanvasDrawer implements PageDrawer {
     this.ctx.textAlign = opts.align;
     this.ctx.textBaseline = opts.baseline === "middle" ? "middle" : opts.baseline;
     this.ctx.fillText(str, this.px(x), this.px(y));
+  }
+
+  measureTextWidth(str: string, fontSizePt: number, bold = false): number {
+    this.ctx.font = `${bold ? "bold " : ""}${this.px(fontSizePt / 2.834646)}px helvetica`;
+    return this.ctx.measureText(str).width / this.scale;
   }
 
   toBlob(): Promise<Blob> {

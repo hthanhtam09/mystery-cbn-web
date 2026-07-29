@@ -12,6 +12,9 @@ export const PALETTE_PAGE_SWATCH_MM = 14;
 // Blank note box to the left of each swatch, for the reader to write in.
 export const PALETTE_NOTE_WIDTH_MM = 40;
 export const PALETTE_NOTE_GAP_MM = 4;
+// Empty outline shape (same shape/size as the swatch, no fill) to its right,
+// for the reader to tick off once that color is painted.
+export const PALETTE_CHECK_GAP_MM = 4;
 export const PALETTE_ROW_GAP_MM = 4;
 // Horizontal gap between columns once a column fills past PALETTE_MAX_PER_COLUMN.
 export const PALETTE_COLUMN_GAP_MM = 6;
@@ -121,29 +124,36 @@ export function paletteColumnHeight(rowsInColumn: number, swatchSize: number, ro
 /**
  * Draws the palette as one or more columns, each running top to bottom and
  * capped at `PALETTE_MAX_PER_COLUMN` swatches — once a column fills up, the
- * next column starts to its left, so a long palette grows leftward across
- * the page rather than overflowing past the bottom margin. Each row pairs a
- * blank note box (for the reader to write a name/word onto, with a "...."
- * placeholder) with a real-color swatch to its right, sized/shaped per
- * `shape` with its code centered inside. `right`/`top` anchor the
- * rightmost column so callers can keep it inside the page's safe margin.
+ * next column starts to its right, so the first swatches (lowest codes) sit
+ * leftmost, closest to the page's left margin, and later columns march
+ * rightward. Each row is, left to right: the real-color reference swatch
+ * with its code centered inside, an empty outline for the reader to tick
+ * off once that color is painted, then a blank note box (for the reader to
+ * write a name/word onto, with a "...." placeholder). `left`/`top` anchor
+ * the leftmost column so callers can keep it inside the page's safe margin.
  */
+export interface PaletteColumnStyle {
+  left: number;
+  top: number;
+  swatchSize: number;
+  rowGap: number;
+  noteWidth: number;
+  noteGap: number;
+  checkGap: number;
+  columnGap: number;
+  fontSize: number;
+}
+
 export function drawPaletteColumn(
   drawer: PageDrawer,
   swatches: PaletteSwatch[],
   shape: SwatchShape,
-  right: number,
-  top: number,
-  swatchSize: number,
-  rowGap: number,
-  noteWidth: number,
-  noteGap: number,
-  columnGap: number,
-  fontSize: number,
+  style: PaletteColumnStyle,
 ): void {
+  const { left, top, swatchSize, rowGap, noteWidth, noteGap, checkGap, columnGap, fontSize } = style;
   const rowStride = swatchSize + rowGap;
   const cornerRadius = swatchSize * 0.18;
-  const columnStride = noteWidth + noteGap + swatchSize + columnGap;
+  const columnStride = swatchSize + checkGap + swatchSize + noteGap + noteWidth + columnGap;
   const columns = paletteColumnCount(swatches.length);
   const columnSizes = paletteColumnSizes(swatches.length, columns);
 
@@ -154,21 +164,13 @@ export function drawPaletteColumn(
       col += 1;
       row = 0;
     }
-    const columnRight = right - col * columnStride;
+    const columnLeft = left + col * columnStride;
     const cy = top + row * rowStride + swatchSize / 2;
-    const cx = columnRight - swatchSize / 2;
-    const noteLeft = cx - swatchSize / 2 - noteGap - noteWidth;
-
-    drawer.setDrawColor(0, 0, 0);
-    drawer.setLineWidth(0.15);
-    drawer.setFillColor(255, 255, 255);
-    drawer.roundedRect(noteLeft, cy - swatchSize / 2, noteWidth, swatchSize, cornerRadius, cornerRadius, "S");
-    drawer.text("......................", noteLeft + noteWidth / 2, cy + swatchSize * 0.15, {
-      align: "center",
-      baseline: "middle",
-      color: [150, 150, 150],
-      fontSizePt: fontSize,
-    });
+    // Leftmost element in the row is the filled reference swatch, with the
+    // empty tick-off outline to its right, and the note box to that's right.
+    const cx = columnLeft + swatchSize / 2;
+    const checkCx = cx + swatchSize / 2 + checkGap + swatchSize / 2;
+    const noteLeft = checkCx + swatchSize / 2 + noteGap;
 
     drawer.setFillColor(swatch.r, swatch.g, swatch.b);
     drawSwatchShape(drawer, shape, cx, cy, swatchSize);
@@ -182,6 +184,20 @@ export function drawPaletteColumn(
       bold: true,
       fontSizePt: fontSize,
     });
+
+    drawer.setDrawColor(0, 0, 0);
+    drawer.setLineWidth(0.15);
+    drawSwatchShape(drawer, shape, checkCx, cy, swatchSize, "S");
+
+    drawer.setFillColor(255, 255, 255);
+    drawer.roundedRect(noteLeft, cy - swatchSize / 2, noteWidth, swatchSize, cornerRadius, cornerRadius, "S");
+    drawer.text("......................", noteLeft + noteWidth / 2, cy + swatchSize * 0.15, {
+      align: "center",
+      baseline: "middle",
+      color: [150, 150, 150],
+      fontSizePt: fontSize,
+    });
+
     row += 1;
   }
 }
@@ -192,17 +208,13 @@ export interface PaletteColumnLayout {
   rowGap: number;
   noteWidth: number;
   noteGap: number;
+  checkGap: number;
   columnGap: number;
   columnHeight: number;
   columnTop: number;
-  columnRight: number;
+  columnLeft: number;
   fontSize: number;
 }
-
-// Reserved on the page's left edge for the big item-number box; the swatch
-// columns are centered within the remaining space to its right rather than
-// across the full content width, so they don't creep in behind the number.
-export const PALETTE_NUMBER_ZONE_MM = 60;
 
 export function computePaletteColumnLayout(
   swatches: PaletteSwatch[],
@@ -213,82 +225,112 @@ export function computePaletteColumnLayout(
 ): PaletteColumnLayout {
   const columns = paletteColumnCount(swatches.length);
   const columnSizes = paletteColumnSizes(swatches.length, columns);
-  const rightZoneWidth = contentWidthMm - PALETTE_NUMBER_ZONE_MM;
-  const naturalColumnWidth = PALETTE_NOTE_WIDTH_MM + PALETTE_NOTE_GAP_MM + PALETTE_PAGE_SWATCH_MM;
+  // Columns are centered across the *full* content width -- there is no
+  // dedicated left-hand zone anymore (the old big number badge that
+  // reserved one is gone; the title is now a single line of small text in
+  // the top margin, which needs no horizontal room of its own).
+  const naturalColumnWidth =
+    PALETTE_NOTE_WIDTH_MM + PALETTE_NOTE_GAP_MM + PALETTE_PAGE_SWATCH_MM + PALETTE_CHECK_GAP_MM + PALETTE_PAGE_SWATCH_MM;
   const naturalWidth = columns * naturalColumnWidth + (columns - 1) * PALETTE_COLUMN_GAP_MM;
-  const shrink = Math.min(1, rightZoneWidth / naturalWidth);
+  const shrink = Math.min(1, contentWidthMm / naturalWidth);
   const swatchSize = PALETTE_PAGE_SWATCH_MM * shrink;
   const rowGap = PALETTE_ROW_GAP_MM * shrink;
   const noteWidth = PALETTE_NOTE_WIDTH_MM * shrink;
   const noteGap = PALETTE_NOTE_GAP_MM * shrink;
+  const checkGap = PALETTE_CHECK_GAP_MM * shrink;
   const columnGap = PALETTE_COLUMN_GAP_MM * shrink;
   const columnHeight = paletteColumnHeight(Math.max(...columnSizes), swatchSize, rowGap);
   const columnTop = marginMm + (contentHeightMm - columnHeight) / 2;
-  // Center the whole block of columns (evenly spaced) within the zone to
-  // the right of the number, rather than the full content width.
-  const columnWidth = noteWidth + noteGap + swatchSize;
-  const totalColumnsWidth = columns * columnWidth + (columns - 1) * columnGap;
-  const rightZoneLeft = marginMm + PALETTE_NUMBER_ZONE_MM;
-  const columnsLeft = rightZoneLeft + (rightZoneWidth - totalColumnsWidth) / 2;
-  const columnRight = columnsLeft + totalColumnsWidth;
   return {
     swatchSize,
     rowGap,
     noteWidth,
     noteGap,
+    checkGap,
     columnGap,
     columnHeight,
     columnTop,
-    columnRight,
+    // Flush against the content box's left edge (i.e. `marginMm` -- already
+    // the page's safe margin outside the KDP bleed/trim, per PAGE_WIDTH_MM /
+    // MARGIN_MM in pdfExport.ts) rather than centered, so the columns sit as
+    // far left as the safe area allows instead of floating mid-page.
+    columnLeft: marginMm,
     fontSize: Math.max(4, 10 * shrink),
   };
 }
 
-// Large item-number badge drawn centered in the left number zone, matching
-// the imported image's position in the batch (1-based) so a reader can
-// match a palette page back to its source image. Drawn as the same shape as
-// this item's swatches, stroke-only (no fill), so it reads as a matching
-// outline badge rather than an unrelated box.
-const PALETTE_ITEM_NUMBER_PT = 96;
-const PALETTE_NUMBER_BOX_MM = 46;
+// Plain small title text, top-left of the page -- no box, no shape, no big
+// digits. Replaces the old stroke-only shape badge with big centered digits:
+// that badge was the same size/shape as the item's own swatches, which read
+// as "yet another swatch" rather than a page header, and gave no way to
+// print the artwork's name (only its raw number). "{Name} #{number}" is
+// plain, single-line text -- the name in black, "#{number}" in gray so the
+// two read as distinct fields on the line; falls back to "#{number}" alone
+// (still gray) when no name was imported for this item.
+const PALETTE_TITLE_FONT_PT = 18;
+const PALETTE_TITLE_NUMBER_GRAY: [number, number, number] = [130, 130, 130];
 
-/** Draws one item's full palette page (background handled by caller) onto `drawer`. */
+/**
+ * Draws one item's full palette page (background handled by caller) onto
+ * `drawer`. `itemNumber` is the source image's own 1-based number (see
+ * `parseItemNumber` in pdfExport.ts) — it drives the shape cycled through
+ * `SHAPE_CYCLE`, so the same source image always gets the same shape
+ * regardless of which batch it's exported in, and is also how `name` (this
+ * item's row from the imported name CSV, already resolved by the caller --
+ * see `parseArtworkNames` in captionsCsv.ts) is looked up: matched by the
+ * artwork's own number, not by batch position, so a batch converted out of
+ * order or covering only some of the CSV's rows still gets the right name.
+ * Printed as small plain text "{Name} #{number}" in the page's top-left
+ * margin — no box, no shape. Falls back to "#{number}" alone with no name.
+ */
+export interface PalettePageGeometry {
+  pageWidthMm: number;
+  marginMm: number;
+  contentWidthMm: number;
+  contentHeightMm: number;
+  /** This item's name from the imported name CSV, if any (see docstring above). */
+  name?: string;
+}
+
 export function drawPalettePage(
   drawer: PageDrawer,
   swatches: PaletteSwatch[],
-  shapeIndex: number,
-  pageWidthMm: number,
-  marginMm: number,
-  contentWidthMm: number,
-  contentHeightMm: number,
+  itemNumber: number,
+  geometry: PalettePageGeometry,
 ): void {
-  const shape = SHAPE_CYCLE[shapeIndex % SHAPE_CYCLE.length];
+  const { pageWidthMm, marginMm, contentWidthMm, contentHeightMm, name } = geometry;
+  const shape = SHAPE_CYCLE[(itemNumber - 1) % SHAPE_CYCLE.length];
   const layout = computePaletteColumnLayout(swatches, pageWidthMm, marginMm, contentWidthMm, contentHeightMm);
 
-  const numberCx = marginMm + PALETTE_NUMBER_ZONE_MM / 2;
-  const numberCy = marginMm + contentHeightMm / 2;
-  drawer.setDrawColor(0, 0, 0);
-  drawer.setLineWidth(0.5);
-  drawSwatchShape(drawer, shape, numberCx, numberCy, PALETTE_NUMBER_BOX_MM, "S");
-  const [labelX, labelY] = swatchLabelAnchor(shape, numberCx, numberCy, PALETTE_NUMBER_BOX_MM);
-  drawer.text(String(shapeIndex + 1), labelX, labelY, {
-    align: "center",
+  const titleY = marginMm + PALETTE_TITLE_FONT_PT * 0.3528;
+  const namePart = name ? `${name} ` : "";
+  const numberPart = `#${itemNumber}`;
+  const nameWidth = namePart
+    ? drawer.measureTextWidth(namePart, PALETTE_TITLE_FONT_PT)
+    : 0;
+  if (namePart) {
+    drawer.text(namePart, marginMm, titleY, {
+      align: "left",
+      baseline: "middle",
+      color: [0, 0, 0],
+      fontSizePt: PALETTE_TITLE_FONT_PT,
+    });
+  }
+  drawer.text(numberPart, marginMm + nameWidth, titleY, {
+    align: "left",
     baseline: "middle",
-    color: [0, 0, 0],
-    bold: true,
-    fontSizePt: PALETTE_ITEM_NUMBER_PT,
+    color: PALETTE_TITLE_NUMBER_GRAY,
+    fontSizePt: PALETTE_TITLE_FONT_PT,
   });
-  drawPaletteColumn(
-    drawer,
-    swatches,
-    shape,
-    layout.columnRight,
-    layout.columnTop,
-    layout.swatchSize,
-    layout.rowGap,
-    layout.noteWidth,
-    layout.noteGap,
-    layout.columnGap,
-    layout.fontSize,
-  );
+  drawPaletteColumn(drawer, swatches, shape, {
+    left: layout.columnLeft,
+    top: layout.columnTop,
+    swatchSize: layout.swatchSize,
+    rowGap: layout.rowGap,
+    noteWidth: layout.noteWidth,
+    noteGap: layout.noteGap,
+    checkGap: layout.checkGap,
+    columnGap: layout.columnGap,
+    fontSize: layout.fontSize,
+  });
 }

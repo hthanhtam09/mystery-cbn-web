@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import { fetchArtifactBlob } from "@/lib/api";
+import type { ArtworkName } from "@/lib/captionsCsv";
 import { fetchPaletteSwatches } from "@/lib/paletteExtract";
 import { JsPdfDrawer } from "@/lib/pageDrawer";
 import { drawPalettePage } from "@/lib/paletteLayout";
@@ -28,6 +29,9 @@ const SUMMARY_NUMBER_AREA_MM = 7;
 const SUMMARY_NUMBER_PT = 20;
 const SUMMARY_CAPTION_PT = 11;
 const SUMMARY_CAPTION_LINE_HEIGHT_MM = SUMMARY_CAPTION_PT * 0.3528 * 1.15;
+// Extra breathing room between the thumbnail's bottom edge and the number
+// below it -- it used to sit flush against the image.
+const SUMMARY_TOP_GAP_MM = 2.5;
 
 /** Strips a leading "1. "/"1) "/"1 - " style index a caption may already carry, so it isn't duplicated by the number drawn above it. */
 function stripLeadingIndex(text: string): string {
@@ -64,10 +68,12 @@ export function drawSummaryCell(
   doc.setFont("helvetica", "bold");
   doc.setFontSize(SUMMARY_NUMBER_PT);
   doc.setTextColor(0, 0, 0);
-  doc.text(String(itemNumber), x + cellWidth / 2, y + imageHeight + SUMMARY_NUMBER_AREA_MM * 0.6, {
-    align: "center",
-    baseline: "middle",
-  });
+  doc.text(
+    String(itemNumber),
+    x + cellWidth / 2,
+    y + imageHeight + SUMMARY_TOP_GAP_MM + SUMMARY_NUMBER_AREA_MM * 0.6,
+    { align: "center", baseline: "middle" },
+  );
 
   const cleanCaption = caption ? stripLeadingIndex(caption).trim() : "";
   if (!cleanCaption) return;
@@ -75,7 +81,7 @@ export function drawSummaryCell(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(SUMMARY_CAPTION_PT);
   const maxWidth = cellWidth - 4;
-  const availableHeight = SUMMARY_LABEL_HEIGHT_MM - SUMMARY_NUMBER_AREA_MM;
+  const availableHeight = SUMMARY_LABEL_HEIGHT_MM - SUMMARY_NUMBER_AREA_MM - SUMMARY_TOP_GAP_MM;
   const maxLines = Math.max(1, Math.floor(availableHeight / SUMMARY_CAPTION_LINE_HEIGHT_MM));
   const lines: string[] = doc.splitTextToSize(cleanCaption, maxWidth);
   const shown = lines.slice(0, maxLines);
@@ -83,7 +89,7 @@ export function drawSummaryCell(
     shown[maxLines - 1] = shown[maxLines - 1].trimEnd() + "…";
   }
 
-  const captionTop = y + imageHeight + SUMMARY_NUMBER_AREA_MM;
+  const captionTop = y + imageHeight + SUMMARY_TOP_GAP_MM + SUMMARY_NUMBER_AREA_MM;
   shown.forEach((line, i) => {
     doc.text(
       line,
@@ -97,6 +103,19 @@ export function drawSummaryCell(
 export interface PdfExportItem {
   jobId: string;
   fileName: string;
+}
+
+/**
+ * Extracts the leading number from a file name (e.g. "5.png" -> 5,
+ * "05_dragon.png" -> 5), so palette/summary numbering can stay tied to the
+ * source image across separate batch runs (e.g. converting 1-4 then 5-8)
+ * instead of always restarting at 1 for whatever's in the current batch.
+ * Falls back to `fallback` (the item's batch position) when the name has no
+ * leading digits to parse.
+ */
+export function parseItemNumber(fileName: string, fallback: number): number {
+  const match = /^(\d+)/.exec(fileName.trim());
+  return match ? Number(match[1]) : fallback;
 }
 
 export interface PdfExportProgress {
@@ -116,12 +135,16 @@ export interface PdfExportOptions {
    */
   paletteBackgrounds?: Blob[];
   /**
-   * Caption text per item, in the same order as `items`, imported from a
-   * CSV (header "text", one row per item in import order). Shown under the
-   * item's number on the summary page. Missing/short arrays leave later
-   * items captionless.
+   * Artwork name/text per item, imported from a name CSV (see
+   * `parseArtworkNames` in captionsCsv.ts) and keyed by the artwork's own
+   * number (from `parseItemNumber`), not by batch position -- so a batch
+   * converted out of numeric order, or covering only some of the CSV's rows,
+   * still matches each item to its own entry. The short `name` is shown on
+   * the palette page ("{name} #{number}"); the full `text` is shown under
+   * the thumbnail on the summary page ("{text} #{number}"). Items with no
+   * matching number are left nameless.
    */
-  captions?: string[];
+  artworkNames?: Map<number, ArtworkName>;
 }
 
 export async function blobToDataUrl(blob: Blob): Promise<string> {
@@ -221,7 +244,7 @@ export async function generateBatchPdf(
   const contentWidth = PAGE_WIDTH_MM - MARGIN_MM * 2;
   const contentHeight = PAGE_HEIGHT_MM - MARGIN_MM * 2;
 
-  const thumbnails: { dataUrl: string; img: HTMLImageElement }[] = [];
+  const thumbnails: { dataUrl: string; img: HTMLImageElement; itemNumber: number }[] = [];
 
   let done = 0;
   const total = items.length;
@@ -243,6 +266,7 @@ export async function generateBatchPdf(
   );
 
   for (const [index, item] of items.entries()) {
+    const itemNumber = parseItemNumber(item.fileName, index + 1);
     const [outlineBlob, coloredBlob, swatches] = await Promise.all([
       fetchArtifactBlob(item.jobId, "preview_lineart"),
       fetchArtifactBlob(item.jobId, "preview_colored"),
@@ -265,20 +289,18 @@ export async function generateBatchPdf(
       drawCover(doc, bg.img, bg.dataUrl, 0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM);
     }
 
-    drawPalettePage(
-      new JsPdfDrawer(doc),
-      swatches,
-      index,
-      PAGE_WIDTH_MM,
-      MARGIN_MM,
-      contentWidth,
-      contentHeight,
-    );
+    drawPalettePage(new JsPdfDrawer(doc), swatches, itemNumber, {
+      pageWidthMm: PAGE_WIDTH_MM,
+      marginMm: MARGIN_MM,
+      contentWidthMm: contentWidth,
+      contentHeightMm: contentHeight,
+      name: options?.artworkNames?.get(itemNumber)?.name,
+    });
 
     doc.addPage();
     drawCover(doc, outlineImg, outlineDataUrl, 0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM);
 
-    thumbnails.push({ dataUrl: coloredDataUrl, img: coloredImg });
+    thumbnails.push({ dataUrl: coloredDataUrl, img: coloredImg, itemNumber });
 
     done += 1;
     onProgress?.({ done, total });
@@ -287,7 +309,6 @@ export async function generateBatchPdf(
   const cellWidth = (contentWidth - GAP_MM * (SUMMARY_COLUMNS - 1)) / SUMMARY_COLUMNS;
   const cellHeight = (contentHeight - GAP_MM * (SUMMARY_ROWS - 1)) / SUMMARY_ROWS;
   const imageHeight = cellHeight - SUMMARY_LABEL_HEIGHT_MM;
-  const captions = options?.captions ?? [];
 
   for (let i = 0; i < thumbnails.length; i += 1) {
     const posOnPage = i % SUMMARY_PER_PAGE;
@@ -300,8 +321,15 @@ export async function generateBatchPdf(
     const x = MARGIN_MM + col * (cellWidth + GAP_MM);
     const y = MARGIN_MM + row * (cellHeight + GAP_MM);
 
-    const { dataUrl, img } = thumbnails[i];
-    drawSummaryCell(doc, img, dataUrl, { x, y, width: cellWidth, imageHeight }, i + 1, captions[i]);
+    const { dataUrl, img, itemNumber } = thumbnails[i];
+    drawSummaryCell(
+      doc,
+      img,
+      dataUrl,
+      { x, y, width: cellWidth, imageHeight },
+      itemNumber,
+      options?.artworkNames?.get(itemNumber)?.text,
+    );
   }
 
   const outroImages = options?.outroImages ?? [];

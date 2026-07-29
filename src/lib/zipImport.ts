@@ -9,6 +9,7 @@ import {
   MARGIN_MM,
   PAGE_HEIGHT_MM,
   PAGE_WIDTH_MM,
+  parseItemNumber,
   SUMMARY_LABEL_HEIGHT_MM,
 } from "@/lib/pdfExport";
 import type { PdfExportOptions, PdfExportProgress } from "@/lib/pdfExport";
@@ -130,7 +131,7 @@ export async function generateBatchPdfFromFolder(
   const contentWidth = PAGE_WIDTH_MM - MARGIN_MM * 2;
   const contentHeight = PAGE_HEIGHT_MM - MARGIN_MM * 2;
 
-  const thumbnails: { dataUrl: string; img: HTMLImageElement }[] = [];
+  const thumbnails: { dataUrl: string; img: HTMLImageElement; itemNumber: number }[] = [];
 
   let done = 0;
   const total = items.length;
@@ -152,6 +153,7 @@ export async function generateBatchPdfFromFolder(
   );
 
   for (const [index, item] of items.entries()) {
+    const itemNumber = parseItemNumber(item.fileName, index + 1);
     const [outlineDataUrl, coloredDataUrl, paletteDataUrl] = await Promise.all([
       blobToDataUrl(item.outlineBlob),
       blobToDataUrl(item.coloredBlob),
@@ -175,7 +177,7 @@ export async function generateBatchPdfFromFolder(
     doc.addPage();
     drawCover(doc, outlineImg, outlineDataUrl, 0, 0, PAGE_WIDTH_MM, PAGE_HEIGHT_MM);
 
-    thumbnails.push({ dataUrl: coloredDataUrl, img: coloredImg });
+    thumbnails.push({ dataUrl: coloredDataUrl, img: coloredImg, itemNumber });
 
     done += 1;
     onProgress?.({ done, total });
@@ -184,7 +186,6 @@ export async function generateBatchPdfFromFolder(
   const cellWidth = (contentWidth - GAP_MM * (SUMMARY_COLUMNS - 1)) / SUMMARY_COLUMNS;
   const cellHeight = (contentHeight - GAP_MM * (SUMMARY_ROWS - 1)) / SUMMARY_ROWS;
   const imageHeight = cellHeight - SUMMARY_LABEL_HEIGHT_MM;
-  const captions = options?.captions ?? [];
 
   for (let i = 0; i < thumbnails.length; i += 1) {
     const posOnPage = i % SUMMARY_PER_PAGE;
@@ -197,8 +198,15 @@ export async function generateBatchPdfFromFolder(
     const x = MARGIN_MM + col * (cellWidth + GAP_MM);
     const y = MARGIN_MM + row * (cellHeight + GAP_MM);
 
-    const { dataUrl, img } = thumbnails[i];
-    drawSummaryCell(doc, img, dataUrl, { x, y, width: cellWidth, imageHeight }, i + 1, captions[i]);
+    const { dataUrl, img, itemNumber } = thumbnails[i];
+    drawSummaryCell(
+      doc,
+      img,
+      dataUrl,
+      { x, y, width: cellWidth, imageHeight },
+      itemNumber,
+      options?.artworkNames?.get(itemNumber)?.text,
+    );
   }
 
   const outroImages = options?.outroImages ?? [];

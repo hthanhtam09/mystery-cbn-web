@@ -15,7 +15,8 @@ import { downloadUrl } from "@/lib/api";
 import { useGeneratePdf } from "@/hooks/useGeneratePdf";
 import { useGenerateZip } from "@/hooks/useGenerateZip";
 import { useImportFolder } from "@/hooks/useImportFolder";
-import { parseCaptionsCsv } from "@/lib/captionsCsv";
+import { parseArtworkNames } from "@/lib/captionsCsv";
+import type { ArtworkName } from "@/lib/captionsCsv";
 
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
 
@@ -195,7 +196,7 @@ export default function Home() {
   const [outroImages, setOutroImages] = useState<File[]>([]);
   const [paletteBackgrounds, setPaletteBackgrounds] = useState<File[]>([]);
   const [captionsFileName, setCaptionsFileName] = useState<string | null>(null);
-  const [captions, setCaptions] = useState<string[]>([]);
+  const [artworkNames, setArtworkNames] = useState<Map<number, ArtworkName>>(new Map());
   const [style, setStyle] = useState<ConvertStyle>({ preset: "dense" });
   // Mask editor state: upload ảnh trước → preview line art + mask editor → convert
   const [maskEditorActive, setMaskEditorActive] = useState(false);
@@ -220,15 +221,16 @@ export default function Home() {
   const handleGeneratePdf = useCallback(() => {
     void pdfExport.generate(
       succeededItems.map((item) => ({ jobId: item.status.job_id, fileName: item.fileName })),
-      { introImages, outroImages, paletteBackgrounds, captions },
+      { introImages, outroImages, paletteBackgrounds, artworkNames },
     );
-  }, [pdfExport, succeededItems, introImages, outroImages, paletteBackgrounds, captions]);
+  }, [pdfExport, succeededItems, introImages, outroImages, paletteBackgrounds, artworkNames]);
 
   const handleGenerateZip = useCallback(() => {
     void zipExport.generate(
       succeededItems.map((item) => ({ jobId: item.status.job_id, fileName: item.fileName })),
+      { artworkNames },
     );
-  }, [zipExport, succeededItems]);
+  }, [zipExport, succeededItems, artworkNames]);
 
   const handleImportFolderChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -247,8 +249,8 @@ export default function Home() {
   );
 
   const handleGeneratePdfFromImport = useCallback(() => {
-    void importFolder.generatePdf({ introImages, outroImages, paletteBackgrounds, captions });
-  }, [importFolder, introImages, outroImages, paletteBackgrounds, captions]);
+    void importFolder.generatePdf({ introImages, outroImages, paletteBackgrounds, artworkNames });
+  }, [importFolder, introImages, outroImages, paletteBackgrounds, artworkNames]);
 
   const handleIntroImagesChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     setIntroImages(Array.from(event.target.files ?? []));
@@ -266,11 +268,11 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) {
       setCaptionsFileName(null);
-      setCaptions([]);
+      setArtworkNames(new Map());
       return;
     }
     setCaptionsFileName(file.name);
-    void file.text().then((text) => setCaptions(parseCaptionsCsv(text)));
+    void file.text().then((text) => setArtworkNames(parseArtworkNames(text)));
   }, []);
 
   const handleMaskEditorStart = useCallback(
@@ -493,11 +495,11 @@ export default function Home() {
                     )}
                   </label>
                   <label className="flex flex-col gap-1">
-                    <span className="text-foreground/70">Captions CSV (header &quot;text&quot;, one row per item)</span>
+                    <span className="text-foreground/70">Artwork names CSV (header &quot;text&quot;, rows &quot;N. Name: action&quot;)</span>
                     <input type="file" accept=".csv" onChange={handleCaptionsCsvChange} className="text-xs" />
                     {captionsFileName && (
                       <span className="text-xs text-foreground/60">
-                        {captionsFileName} — {captions.length} caption(s)
+                        {captionsFileName} — {artworkNames.size} name(s)
                       </span>
                     )}
                   </label>
@@ -700,11 +702,11 @@ export default function Home() {
                   )}
                 </label>
                 <label className="flex flex-col gap-1">
-                  <span className="text-foreground/70">Captions CSV (header &quot;text&quot;, one row per item)</span>
+                  <span className="text-foreground/70">Artwork names CSV (header &quot;text&quot;, rows &quot;N. Name: action&quot;)</span>
                   <input type="file" accept=".csv" onChange={handleCaptionsCsvChange} className="text-xs" />
                   {captionsFileName && (
                     <span className="text-xs text-foreground/60">
-                      {captionsFileName} — {captions.length} caption(s)
+                      {captionsFileName} — {artworkNames.size} name(s)
                     </span>
                   )}
                 </label>

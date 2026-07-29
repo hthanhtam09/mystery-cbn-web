@@ -2,13 +2,14 @@
 
 import { useCallback, useRef, useState } from "react";
 import { generateBatchZip } from "@/lib/zipExport";
+import type { ZipExportOptions } from "@/lib/zipExport";
 import type { PdfExportItem, PdfExportProgress } from "@/lib/pdfExport";
 
 export interface UseGenerateZipResult {
   generating: boolean;
   progress: PdfExportProgress | null;
   error: string | null;
-  generate: (items: PdfExportItem[]) => Promise<void>;
+  generate: (items: PdfExportItem[], options?: ZipExportOptions) => Promise<void>;
 }
 
 /**
@@ -22,16 +23,20 @@ export function useGenerateZip(): UseGenerateZipResult {
   const [error, setError] = useState<string | null>(null);
   const generationRef = useRef(0);
 
-  const generate = useCallback(async (items: PdfExportItem[]) => {
+  const generate = useCallback(async (items: PdfExportItem[], options?: ZipExportOptions) => {
     const generation = ++generationRef.current;
     setGenerating(true);
     setProgress({ done: 0, total: items.length });
     setError(null);
 
     try {
-      const blob = await generateBatchZip(items, (p) => {
-        if (generationRef.current === generation) setProgress(p);
-      });
+      const blob = await generateBatchZip(
+        items,
+        (p) => {
+          if (generationRef.current === generation) setProgress(p);
+        },
+        options,
+      );
       if (generationRef.current !== generation) return;
 
       const objectUrl = URL.createObjectURL(blob);
