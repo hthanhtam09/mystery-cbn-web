@@ -10,8 +10,14 @@ export interface PreviewCanvasProps {
 }
 
 /**
- * Displays the colored preview with masked regions "erased" (transparent).
- * Composites: colored preview + apply alpha=0 to mask pixels.
+ * Shows the colored preview with the masked regions knocked out to white — an
+ * approximation of the printed page: what stays colored is what the numbers
+ * will cover, what turns white is what the end user fills in.
+ *
+ * Composited with `destination-out` against an alpha stencil built from the
+ * mask, deliberately: reading the colored preview back with `getImageData`
+ * would throw on a cross-origin API host (a tainted canvas), while the mask is
+ * a same-origin data URL and is always safe to read.
  */
 export function PreviewCanvas({
   coloredPreviewUrl,
@@ -24,65 +30,68 @@ export function PreviewCanvas({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const coloredImg = new Image();
-    coloredImg.onload = () => {
-      ctx.drawImage(coloredImg, 0, 0);
+    let cancelled = false;
 
-      // If mask provided, erase masked regions
-      if (maskBase64) {
-        const maskImg = new Image();
-        maskImg.onerror = () => console.error("Failed to load mask image");
-        maskImg.onload = () => {
-          try {
-            // Draw mask to a temporary canvas at exact dimensions
-            const tempCanvas = document.createElement("canvas");
-            tempCanvas.width = width;
-            tempCanvas.height = height;
-            const tempCtx = tempCanvas.getContext("2d");
-            if (!tempCtx) {
-              console.error("Failed to get temp canvas context");
-              return;
-            }
+    /** Turn the binary black/white mask into a stencil whose alpha is opaque
+     * exactly where the user painted. */
+    const buildStencil = async (): Promise<HTMLCanvasElement | null> => {
+      if (!maskBase64) return null;
+      const maskImg = await loadImage(maskBase64).catch(() => null);
+      if (!maskImg) return null;
 
-            // Draw mask image and ensure it fills the canvas
-            tempCtx.drawImage(maskImg, 0, 0, width, height);
-            const maskImageData = tempCtx.getImageData(0, 0, width, height);
-            const maskData = maskImageData.data;
-
-            // Get current colored preview pixel data from main canvas
-            const coloredImageData = ctx.getImageData(0, 0, width, height);
-            const coloredData = coloredImageData.data;
-
-            // Erase (set alpha=0) for masked pixels (red channel > 128 = masked)
-            for (let i = 0; i < maskData.length; i += 4) {
-              const r = maskData[i];
-              // Mask semantics: red > 128 = masked region (don't color)
-              if (r > 128) {
-                coloredData[i + 3] = 0; // Set alpha to 0 (transparent)
-              }
-            }
-
-            ctx.putImageData(coloredImageData, 0, 0);
-          } catch (error) {
-            console.error("Error applying mask:", error);
-          }
-        };
-        maskImg.src = maskBase64;
+      const stencil = document.createElement("canvas");
+      stencil.width = width;
+      stencil.height = height;
+      const stencilCtx = stencil.getContext("2d");
+      if (!stencilCtx) return null;
+      stencilCtx.drawImage(maskImg, 0, 0, width, height);
+      const data = stencilCtx.getImageData(0, 0, width, height);
+      const px = data.data;
+      for (let i = 0; i < px.length; i += 4) {
+        // White (>= 128) = masked. Encode it as alpha; color is irrelevant.
+        px[i + 3] = px[i] >= 128 ? 255 : 0;
       }
+      stencilCtx.putImageData(data, 0, 0);
+      return stencil;
     };
-    coloredImg.src = coloredPreviewUrl;
+
+    void (async () => {
+      const [colored, stencil] = await Promise.all([
+        loadImage(coloredPreviewUrl).catch(() => null),
+        buildStencil(),
+      ]);
+      if (cancelled || !colored) return;
+
+      ctx.globalCompositeOperation = "source-over";
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(colored, 0, 0, width, height);
+
+      if (stencil) {
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.drawImage(stencil, 0, 0);
+      }
+
+      // Paper under the knocked-out holes.
+      ctx.globalCompositeOperation = "destination-over";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = "source-over";
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [coloredPreviewUrl, maskBase64, width, height]);
 
   return (
     <div className="flex flex-col gap-2">
       <div className="text-xs text-foreground/60">
-        Preview: masked areas (red) will be left white for coloring
+        Preview: the white areas are what you painted — they get no number and no legend color.
       </div>
       <div className="max-h-[60vh] overflow-auto rounded-lg border border-border bg-surface">
         <canvas
@@ -96,4 +105,15 @@ export function PreviewCanvas({
       </div>
     </div>
   );
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    // Needed only for the cross-origin API host; harmless on a data URL.
+    if (!src.startsWith("data:")) img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`failed to load image: ${src.slice(0, 64)}`));
+    img.src = src;
+  });
 }

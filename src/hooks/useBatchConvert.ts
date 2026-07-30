@@ -90,8 +90,12 @@ export function useBatchConvert(): UseBatchConvertResult {
         const overrides = style?.overrides ? { ...style.overrides } : {};
         // If hand-drawn mask bitmap is provided, add it to overrides.mask
         if (style?.maskBitmap) {
-          if (!overrides.mask) overrides.mask = {};
-          (overrides.mask as Record<string, unknown>).bitmap = style.maskBitmap;
+          // Copy the mask section too -- the spread above is shallow, and
+          // mutating it in place would edit the caller's style object.
+          overrides.mask = {
+            ...(overrides.mask as Record<string, unknown> | undefined),
+            bitmap: style.maskBitmap,
+          };
         }
         const response = await submitConvert({
           file,

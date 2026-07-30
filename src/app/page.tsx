@@ -11,7 +11,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Uploader } from "@/components/Uploader";
 import { useBatchConvert } from "@/hooks/useBatchConvert";
 import type { BatchItem, ConvertStyle } from "@/hooks/useBatchConvert";
-import { downloadUrl } from "@/lib/api";
+import { downloadUrl, getJobStatus, submitConvert } from "@/lib/api";
 import { useGeneratePdf } from "@/hooks/useGeneratePdf";
 import { useGenerateZip } from "@/hooks/useGenerateZip";
 import { useImportFolder } from "@/hooks/useImportFolder";
@@ -19,6 +19,29 @@ import { parseArtworkNames } from "@/lib/captionsCsv";
 import type { ArtworkName } from "@/lib/captionsCsv";
 
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"]);
+
+/** Backdrop preview poll budget: 1 s x 180 = 3 min, comfortably above a dense
+ * conversion of a full-page illustration. */
+const PREVIEW_POLL_INTERVAL_MS = 1000;
+const PREVIEW_POLL_ATTEMPTS = 180;
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readImageSize(src: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.width, height: img.height });
+    img.onerror = () => reject(new Error("could not decode image"));
+    img.src = src;
+  });
+}
 
 function isItemFinished(item: BatchItem): boolean {
   if (item.error !== null) return true;
@@ -204,6 +227,9 @@ export default function Home() {
   const [previewLineArt, setPreviewLineArt] = useState<string | null>(null);
   const [previewColored, setPreviewColored] = useState<string | null>(null);
   const [maskBitmap, setMaskBitmap] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewProgress, setPreviewProgress] = useState(0);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewImageDimensions, setPreviewImageDimensions] = useState<{
     width: number;
     height: number;
@@ -283,77 +309,45 @@ export default function Home() {
       setMaskEditorActive(true);
       setMaskBitmap(null);
 
-      // Get file dimensions for canvas
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const dataUrl = e.target?.result as string;
-        const img = new Image();
-        img.onload = async () => {
-          const { width, height } = img;
-          setPreviewImageDimensions({ width, height });
-          setPreviewLineArt(dataUrl);
+      setPreviewError(null);
+      setPreviewColored(null);
+      setPreviewProgress(0);
+      setPreviewLoading(true);
 
-          // Call API to get preview_colored (full colored image for mask editor preview)
-          try {
-            const formData = new FormData();
-            formData.append("file", file);
-            formData.append("preset", "partial");
-            formData.append("seed", "0");
+      // Canvas geometry comes from the upload itself -- the mask is resized to
+      // the engine's working raster on decode, so only the aspect ratio has to
+      // match, and the source's own dimensions guarantee that.
+      const dataUrl = await readFileAsDataUrl(file);
+      const { width, height } = await readImageSize(dataUrl);
+      setPreviewImageDimensions({ width, height });
+      setPreviewLineArt(dataUrl);
 
-            const response = await fetch(
-              `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001"}/v1/convert`,
-              { method: "POST", body: formData }
-            );
-
-            if (!response.ok) {
-              console.error("API convert failed:", response.status);
-              setPreviewColored(dataUrl); // Fallback to original image
-              return;
-            }
-
-            const data = (await response.json()) as { job_id: string };
-            const jobId = data.job_id;
-
-            // Poll job status until complete
-            let completed = false;
-            let attempts = 0;
-            const maxAttempts = 120; // 2 min timeout
-
-            while (!completed && attempts < maxAttempts) {
-              attempts++;
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-
-              const statusResponse = await fetch(
-                `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001"}/v1/job/${jobId}`
-              );
-
-              if (statusResponse.ok) {
-                const status = await statusResponse.json();
-                if (status.state === "succeeded" && status.downloads?.preview_colored) {
-                  // Got the colored preview URL
-                  const previewUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001"}/v1/artifact/${jobId}/preview_colored`;
-                  setPreviewColored(previewUrl);
-                  completed = true;
-                } else if (status.state === "failed") {
-                  console.error("Job failed:", status.error);
-                  setPreviewColored(dataUrl); // Fallback
-                  completed = true;
-                }
-              }
-            }
-
-            if (!completed) {
-              console.error("Job timed out");
-              setPreviewColored(dataUrl); // Fallback
-            }
-          } catch (error) {
-            console.error("Error fetching preview:", error);
-            setPreviewColored(dataUrl); // Fallback to original image
+      // A throwaway unmasked "partial" run supplies the backdrop to paint on:
+      // the colored preview shows exactly the region boundaries the mask will
+      // be resolved against.
+      try {
+        const { job_id: jobId } = await submitConvert({ file, preset: "partial", seed: 0 });
+        for (let attempt = 0; attempt < PREVIEW_POLL_ATTEMPTS; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, PREVIEW_POLL_INTERVAL_MS));
+          const status = await getJobStatus(jobId);
+          setPreviewProgress(status.fraction_complete);
+          if (status.state === "succeeded") {
+            setPreviewColored(downloadUrl(jobId, "preview_colored"));
+            return;
           }
-        };
-        img.src = dataUrl;
-      };
-      reader.readAsDataURL(file);
+          if (status.state === "failed" || status.state === "cancelled") {
+            throw new Error(status.error ?? `preview job ${status.state}`);
+          }
+        }
+        throw new Error("preview timed out");
+      } catch (error) {
+        // Painting still works over the raw artwork; only the region preview is
+        // lost, so degrade instead of blocking the user.
+        setPreviewError(error instanceof Error ? error.message : String(error));
+        setPreviewColored(dataUrl);
+      } finally {
+        setPreviewLoading(false);
+      }
     },
     [],
   );
@@ -363,7 +357,7 @@ export default function Home() {
       setOpenItemId(null);
       // If mask editor should be used, start it instead
       if (style.preset === "partial") {
-        handleMaskEditorStart(files);
+        void handleMaskEditorStart(files);
       } else {
         batch.submit(files, style);
       }
@@ -372,13 +366,11 @@ export default function Home() {
   );
 
   const handleMaskSubmit = useCallback(() => {
-    if (!maskEditorFile) return;
+    // The painted mask is the only way to choose the blank areas, so a run
+    // without one is not a thing to fall back for -- the button is disabled.
+    if (!maskEditorFile || !maskBitmap) return;
     setMaskEditorActive(false);
-    // Submit with mask bitmap
-    batch.submit([maskEditorFile], {
-      ...style,
-      maskBitmap,
-    });
+    batch.submit([maskEditorFile], { ...style, maskBitmap });
   }, [batch, style, maskEditorFile, maskBitmap]);
 
   const handleAddMore = useCallback(
@@ -535,11 +527,25 @@ export default function Home() {
         ) : maskEditorActive && previewLineArt && previewImageDimensions ? (
           <section className="flex flex-col gap-4">
             <h2 className="text-lg font-semibold">Draw areas to leave white (uncolored)</h2>
+
+            {previewLoading && (
+              <p className="text-sm text-foreground/70" aria-live="polite">
+                Rendering the colored preview… {Math.round(previewProgress * 100)}% — you can start
+                painting now on the original artwork; the backdrop swaps in when it is ready
+                (strokes are kept).
+              </p>
+            )}
+            {previewError && (
+              <p role="alert" className="text-sm text-amber-600 dark:text-amber-400">
+                Colored preview unavailable ({previewError}) — painting over the original artwork
+                instead.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-6">
               <div>
                 <h3 className="mb-2 text-sm font-semibold">Draw mask</h3>
                 <MaskEditor
-                  imageUrl={previewLineArt}
+                  imageUrl={previewColored ?? previewLineArt}
                   imageWidth={previewImageDimensions.width}
                   imageHeight={previewImageDimensions.height}
                   onMaskChange={setMaskBitmap}
@@ -547,14 +553,12 @@ export default function Home() {
               </div>
               <div>
                 <h3 className="mb-2 text-sm font-semibold">Preview</h3>
-                {previewColored && (
-                  <PreviewCanvas
-                    coloredPreviewUrl={previewColored}
-                    maskBase64={maskBitmap}
-                    width={previewImageDimensions.width}
-                    height={previewImageDimensions.height}
-                  />
-                )}
+                <PreviewCanvas
+                  coloredPreviewUrl={previewColored ?? previewLineArt}
+                  maskBase64={maskBitmap}
+                  width={previewImageDimensions.width}
+                  height={previewImageDimensions.height}
+                />
               </div>
             </div>
             <div className="flex gap-3">
@@ -566,6 +570,9 @@ export default function Home() {
                   setPreviewLineArt(null);
                   setPreviewColored(null);
                   setMaskBitmap(null);
+                  setPreviewError(null);
+                  setPreviewLoading(false);
+                  setPreviewProgress(0);
                 }}
                 className="rounded border border-border px-4 py-2 text-sm hover:bg-surface"
               >
@@ -574,10 +581,16 @@ export default function Home() {
               <button
                 type="button"
                 onClick={handleMaskSubmit}
-                className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                disabled={!maskBitmap}
+                className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Convert with mask
               </button>
+              {!maskBitmap && (
+                <p className="self-center text-sm text-foreground/60">
+                  Paint at least one area to leave blank.
+                </p>
+              )}
             </div>
           </section>
         ) : (
