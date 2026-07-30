@@ -211,7 +211,6 @@ export interface PaletteColumnLayout {
   checkGap: number;
   columnGap: number;
   columnHeight: number;
-  columnTop: number;
   columnLeft: number;
   fontSize: number;
 }
@@ -221,11 +220,10 @@ export function computePaletteColumnLayout(
   pageWidthMm: number,
   marginMm: number,
   contentWidthMm: number,
-  contentHeightMm: number,
 ): PaletteColumnLayout {
   const columns = paletteColumnCount(swatches.length);
   const columnSizes = paletteColumnSizes(swatches.length, columns);
-  // Columns are centered across the *full* content width -- there is no
+  // Columns are sized across the *full* content width -- there is no
   // dedicated left-hand zone anymore (the old big number badge that
   // reserved one is gone; the title is now a single line of small text in
   // the top margin, which needs no horizontal room of its own).
@@ -240,7 +238,6 @@ export function computePaletteColumnLayout(
   const checkGap = PALETTE_CHECK_GAP_MM * shrink;
   const columnGap = PALETTE_COLUMN_GAP_MM * shrink;
   const columnHeight = paletteColumnHeight(Math.max(...columnSizes), swatchSize, rowGap);
-  const columnTop = marginMm + (contentHeightMm - columnHeight) / 2;
   return {
     swatchSize,
     rowGap,
@@ -249,7 +246,6 @@ export function computePaletteColumnLayout(
     checkGap,
     columnGap,
     columnHeight,
-    columnTop,
     // Flush against the content box's left edge (i.e. `marginMm` -- already
     // the page's safe margin outside the KDP bleed/trim, per PAGE_WIDTH_MM /
     // MARGIN_MM in pdfExport.ts) rather than centered, so the columns sit as
@@ -269,6 +265,15 @@ export function computePaletteColumnLayout(
 // (still gray) when no name was imported for this item.
 const PALETTE_TITLE_FONT_PT = 18;
 const PALETTE_TITLE_NUMBER_GRAY: [number, number, number] = [130, 130, 130];
+// Rule separating the title from the color table below it, and the table's
+// own vertical anchor -- close under the title/rule rather than centered
+// in the remaining page height, so the table reads as "part of the header
+// block" instead of floating in the middle of the page.
+const PALETTE_TITLE_LINE_HEIGHT_MM = PALETTE_TITLE_FONT_PT * 0.3528 * 1.3;
+const PALETTE_RULE_GAP_ABOVE_MM = 3;
+const PALETTE_RULE_THICKNESS_MM = 0.5;
+const PALETTE_RULE_GAP_BELOW_MM = 7;
+const PALETTE_RULE_COLOR: [number, number, number] = [0, 0, 0];
 
 /**
  * Draws one item's full palette page (background handled by caller) onto
@@ -287,6 +292,9 @@ export interface PalettePageGeometry {
   pageWidthMm: number;
   marginMm: number;
   contentWidthMm: number;
+  /** Unused by this function (the table anchors under the title/rule, not
+   * centered in the content box) -- kept so callers don't need a special
+   * case just to omit it. */
   contentHeightMm: number;
   /** This item's name from the imported name CSV, if any (see docstring above). */
   name?: string;
@@ -298,9 +306,9 @@ export function drawPalettePage(
   itemNumber: number,
   geometry: PalettePageGeometry,
 ): void {
-  const { pageWidthMm, marginMm, contentWidthMm, contentHeightMm, name } = geometry;
+  const { pageWidthMm, marginMm, contentWidthMm, name } = geometry;
   const shape = SHAPE_CYCLE[(itemNumber - 1) % SHAPE_CYCLE.length];
-  const layout = computePaletteColumnLayout(swatches, pageWidthMm, marginMm, contentWidthMm, contentHeightMm);
+  const layout = computePaletteColumnLayout(swatches, pageWidthMm, marginMm, contentWidthMm);
 
   const titleY = marginMm + PALETTE_TITLE_FONT_PT * 0.3528;
   const namePart = name ? `${name} ` : "";
@@ -322,9 +330,15 @@ export function drawPalettePage(
     color: PALETTE_TITLE_NUMBER_GRAY,
     fontSizePt: PALETTE_TITLE_FONT_PT,
   });
+
+  const ruleY = marginMm + PALETTE_TITLE_LINE_HEIGHT_MM + PALETTE_RULE_GAP_ABOVE_MM;
+  drawer.setFillColor(...PALETTE_RULE_COLOR);
+  drawer.roundedRect(marginMm, ruleY, contentWidthMm, PALETTE_RULE_THICKNESS_MM, 0, 0, "F");
+  const columnTop = ruleY + PALETTE_RULE_THICKNESS_MM + PALETTE_RULE_GAP_BELOW_MM;
+
   drawPaletteColumn(drawer, swatches, shape, {
     left: layout.columnLeft,
-    top: layout.columnTop,
+    top: columnTop,
     swatchSize: layout.swatchSize,
     rowGap: layout.rowGap,
     noteWidth: layout.noteWidth,

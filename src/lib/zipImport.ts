@@ -125,7 +125,7 @@ export async function generateBatchPdfFromFolder(
   const doc = new jsPDF({
     unit: "mm",
     format: [PAGE_WIDTH_MM, PAGE_HEIGHT_MM],
-    filters: [],
+    filters: ["FlateEncode"],
     precision: 16,
   });
   const contentWidth = PAGE_WIDTH_MM - MARGIN_MM * 2;

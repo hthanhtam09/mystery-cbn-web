@@ -231,14 +231,18 @@ export async function generateBatchPdf(
   onProgress?: (progress: PdfExportProgress) => void,
   options?: PdfExportOptions,
 ): Promise<Blob> {
-  // No stream filters + high coordinate precision: this PDF is meant for
-  // print (KDP), so favor maximum sharpness over file size. `filters`
-  // accepts named PDF filters like "FlateEncode" or `true`, not "NONE" —
-  // an empty array means "apply no filters" here.
+  // FlateEncode + high coordinate precision: this PDF is meant for print
+  // (KDP), so favor maximum sharpness over file size. FlateEncode is
+  // lossless (same algorithm PNG itself uses internally), so it only
+  // shrinks stream size — it never affects image sharpness. Without it,
+  // every embedded image is stored as its raw uncompressed bitmap, and a
+  // full batch's combined content string can exceed the JS engine's max
+  // string length (`Array.join(): Invalid string length`) during
+  // `doc.output("blob")`.
   const doc = new jsPDF({
     unit: "mm",
     format: [PAGE_WIDTH_MM, PAGE_HEIGHT_MM],
-    filters: [],
+    filters: ["FlateEncode"],
     precision: 16,
   });
   const contentWidth = PAGE_WIDTH_MM - MARGIN_MM * 2;
